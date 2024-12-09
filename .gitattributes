@@ -1,0 +1,11 @@
+*.bat   eol=crlf
+*.js    eol=lf
+*.json  eol=lf
+*.xml   eol=lf
+*.html  eol=lf
+*.sh    eol=lf
+*.java  eol=lf
+*.kt    eol=lf
+*.h     eol=lf
+*.m     eol=lf
+*.swift eol=lf
