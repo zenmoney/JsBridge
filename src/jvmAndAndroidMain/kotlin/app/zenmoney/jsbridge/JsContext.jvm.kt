@@ -20,6 +20,8 @@ actual class JsContext : AutoCloseable {
     actual val NULL: JsValue = JsValueImpl(this, v8Runtime.createV8ValueNull()).also { registerValue(it) }
     actual val UNDEFINED: JsValue = JsValueImpl(this, v8Runtime.createV8ValueUndefined()).also { registerValue(it) }
 
+    actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
+
     @Throws(JsException::class)
     actual fun evaluateScript(script: String): JsValue {
         val v8Value: V8Value =

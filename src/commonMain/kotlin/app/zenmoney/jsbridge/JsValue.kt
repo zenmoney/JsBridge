@@ -11,7 +11,9 @@ fun JsValue.toJson(): String =
         }
     }
 
-fun JsValue.toPlainValue(): Any? {
+fun JsValue.toPlainValue(): Any? = context.getPlainValueOf(this)
+
+internal fun JsValue.toBasicPlainValue(): Any? {
     return when (this) {
         context.NULL,
         context.UNDEFINED,
@@ -19,7 +21,7 @@ fun JsValue.toPlainValue(): Any? {
         is JsBoolean -> return toBoolean()
         is JsNumber -> return toNumber()
         is JsString -> return toString()
-        is JsDate -> return toInstant()
+        is JsDate -> return toMillis()
         is JsUint8Array -> return toByteArray()
         is JsArray -> return toPlainList()
         is JsObject -> return toPlainMap()

@@ -47,6 +47,8 @@ actual class JsContext : AutoCloseable {
     actual val NULL: JsValue = JsValueImpl(this, JSValue.valueWithNullInContext(jsContext)!!)
     actual val UNDEFINED: JsValue = JsValueImpl(this, JSValue.valueWithUndefinedInContext(jsContext)!!)
 
+    actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
+
     @Throws(JsException::class)
     actual fun evaluateScript(script: String): JsValue {
         val jsValue = jsContext.evaluateScript(script)

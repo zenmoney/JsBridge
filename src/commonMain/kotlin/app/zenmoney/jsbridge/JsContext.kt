@@ -4,6 +4,9 @@ expect class JsContext : AutoCloseable {
     val globalObject: JsObject
     val NULL: JsValue
     val UNDEFINED: JsValue
+
+    var getPlainValueOf: (JsValue) -> Any?
+
     constructor()
 
     @Throws(JsException::class)
