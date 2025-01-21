@@ -12,17 +12,14 @@ expect sealed interface JsObject : JsValue {
 expect fun JsObject(context: JsContext): JsObject
 
 val JsObject.keys: Set<String>
-    get() {
-        val keysFunc = context.evaluateScript("Object.keys") as JsFunction
-        val keys = keysFunc.apply(context.globalObject, listOf(this)) as JsArray
-        return keys.mapTo(linkedSetOf()) { it.toString() }.also {
-            keysFunc.close()
-            keys.close()
+    get() =
+        context.evaluateScript("Object.keys").use { keysFunc ->
+            (keysFunc as JsFunction).apply(context.globalObject, listOf(this)).use { keys ->
+                (keys as JsArray).mapTo(linkedSetOf()) { it.toString() }
+            }
         }
-    }
 
 fun JsObject.toPlainMap(): Map<String, Any?> =
-    keys.associateWith {
-        val value = get(it)
-        value.toPlainValue().also { value.close() }
+    keys.associateWith { key ->
+        get(key).use { it.toPlainValue() }
     }

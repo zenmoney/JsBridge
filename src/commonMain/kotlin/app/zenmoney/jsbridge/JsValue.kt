@@ -4,14 +4,12 @@ expect sealed interface JsValue : AutoCloseable {
     val context: JsContext
 }
 
-fun JsValue.toJson(): String {
-    val stringify = context.evaluateScript("JSON.stringify") as JsFunction
-    val jsonValue = stringify.apply(context.globalObject, listOf(this))
-    val json = jsonValue.toString()
-    stringify.close()
-    jsonValue.close()
-    return json
-}
+fun JsValue.toJson(): String =
+    context.evaluateScript("JSON.stringify").use { stringify ->
+        (stringify as JsFunction).apply(context.globalObject, listOf(this)).use {
+            it.toString()
+        }
+    }
 
 fun JsValue.toPlainValue(): Any? {
     return when (this) {

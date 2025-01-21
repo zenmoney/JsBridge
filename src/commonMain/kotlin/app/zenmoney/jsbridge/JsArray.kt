@@ -18,7 +18,16 @@ inline fun <R, C : MutableCollection<in R>> JsArray.mapTo(
     val n = size
     for (i in 0 until n) {
         val value = get(i)
-        val transformedValue = transform(value)
+        val transformedValue =
+            try {
+                transform(value)
+            } catch (e: Throwable) {
+                try {
+                    value.close()
+                } catch (_: Throwable) {
+                }
+                throw e
+            }
         if (transformedValue !== value) {
             value.close()
         }
@@ -34,9 +43,7 @@ fun JsArray.toList(): List<JsValue> = map { it }
 fun JsArray.forEach(action: (JsValue) -> Unit) {
     val n = size
     for (i in 0 until n) {
-        val value = get(i)
-        action(value)
-        value.close()
+        get(i).use(action)
     }
 }
 
