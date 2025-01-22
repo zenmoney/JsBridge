@@ -134,7 +134,7 @@ actual class JsContext : AutoCloseable {
         }
     }
 
-    override fun close() {
+    actual override fun close() {
         if (isClosed) {
             return
         }

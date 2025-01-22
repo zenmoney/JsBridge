@@ -1,8 +1,8 @@
 package app.zenmoney.jsbridge
 
 import platform.JavaScriptCore.JSValue
+import platform.JavaScriptCore.objectForKeyedSubscript
 import platform.JavaScriptCore.valueAtIndex
-import platform.JavaScriptCore.valueForProperty
 
 actual sealed interface JsArray : JsObject {
     actual val size: Int
@@ -16,7 +16,7 @@ internal class JsArrayImpl(
 ) : JsObjectImpl(context, jsValue),
     JsArray {
     override val size: Int
-        get() = jsValue.valueForProperty("length")?.toInt32() ?: 0
+        get() = jsValue.objectForKeyedSubscript("length")?.toInt32() ?: 0
 
     override fun get(index: Int): JsValue = JsValue(context, jsValue.valueAtIndex(index.toULong()))
 }

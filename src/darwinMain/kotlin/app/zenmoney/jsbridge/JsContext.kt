@@ -1,17 +1,15 @@
 package app.zenmoney.jsbridge
 
 import platform.JavaScriptCore.JSContext
-import platform.JavaScriptCore.JSPropertyDescriptorEnumerableKey
-import platform.JavaScriptCore.JSPropertyDescriptorValueKey
 import platform.JavaScriptCore.JSValue
-import platform.JavaScriptCore.defineProperty
-import platform.JavaScriptCore.valueForProperty
+import platform.JavaScriptCore.objectForKeyedSubscript
 
 actual class JsContext : AutoCloseable {
     private var lastException: Exception? = null
 
     internal val jsContext = JSContext()
     internal val jsDate = jsContext.evaluateScript("Date")!!
+    internal val jsDefineProperty = jsContext.evaluateScript("Object.defineProperty")!!
     internal val jsTypeOf =
         jsContext.evaluateScript(
             """
@@ -62,7 +60,7 @@ actual class JsContext : AutoCloseable {
             jsContext.exception = null
             throw JsException(
                 e.toString_() ?: e.toString(),
-                lastException?.takeIf { e.isObject && e.valueForProperty("appZenmoneyException")?.toInt32() == it.hashCode() },
+                lastException?.takeIf { e.isObject && e.objectForKeyedSubscript("appZenmoneyException")?.toInt32() == it.hashCode() },
                 (if (e.isObject) e.toDictionary()?.mapKeys { it.key.toString() } else null) ?: emptyMap(),
             ).also {
                 lastException = null
@@ -74,11 +72,14 @@ actual class JsContext : AutoCloseable {
         lastException = e
         val message = e.message?.ifBlank { null }?.replace("\"", "\\\"")
         val jsError = jsContext.evaluateScript("new Error(${if (message == null) "" else "\"${message}\""})")!!
-        jsError.defineProperty(
-            "appZenmoneyException",
-            mapOf(
-                JSPropertyDescriptorEnumerableKey to false,
-                JSPropertyDescriptorValueKey to e.hashCode(),
+        jsDefineProperty.callWithArguments(
+            listOf(
+                jsError,
+                "appZenmoneyException",
+                mapOf(
+                    "enumerable" to false,
+                    "value" to e.hashCode(),
+                ),
             ),
         )
         jsContext.exception = jsError
@@ -101,6 +102,6 @@ actual class JsContext : AutoCloseable {
         return JsValue(this, jsValue)
     }
 
-    override fun close() {
+    actual override fun close() {
     }
 }

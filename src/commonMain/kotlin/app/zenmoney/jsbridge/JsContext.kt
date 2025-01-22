@@ -11,4 +11,6 @@ expect class JsContext : AutoCloseable {
 
     @Throws(JsException::class)
     fun evaluateScript(script: String): JsValue
+
+    override fun close()
 }

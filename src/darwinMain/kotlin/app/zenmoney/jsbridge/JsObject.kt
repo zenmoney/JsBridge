@@ -1,8 +1,8 @@
 package app.zenmoney.jsbridge
 
 import platform.JavaScriptCore.JSValue
-import platform.JavaScriptCore.setValue
-import platform.JavaScriptCore.valueForProperty
+import platform.JavaScriptCore.objectForKeyedSubscript
+import platform.JavaScriptCore.setObject
 
 actual sealed interface JsObject : JsValue {
     actual operator fun get(key: String): JsValue
@@ -20,12 +20,12 @@ internal open class JsObjectImpl(
     jsValue: JSValue,
 ) : JsValueImpl(context, jsValue),
     JsObject {
-    override fun get(key: String): JsValue = JsValue(context, jsValue.valueForProperty(key))
+    override fun get(key: String): JsValue = JsValue(context, jsValue.objectForKeyedSubscript(key))
 
     override fun set(
         key: String,
         value: JsValue?,
     ) {
-        jsValue.setValue(((value ?: context.NULL) as JsValueImpl).jsValue, key)
+        jsValue.setObject(((value ?: context.NULL) as JsValueImpl).jsValue, key)
     }
 }
