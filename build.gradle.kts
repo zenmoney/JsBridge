@@ -1,8 +1,12 @@
+import java.util.Properties
+
 plugins {
     kotlin("multiplatform")
     kotlin("plugin.serialization")
     id("com.android.library")
     id("org.jlleitschuh.gradle.ktlint")
+    id("maven-publish")
+    id("signing")
 }
 
 group = "app.zenmoney.jsbridge"
@@ -20,7 +24,9 @@ ktlint {
 kotlin {
     jvm()
     jvmToolchain(17)
-    androidTarget()
+    androidTarget {
+        publishLibraryVariants("release", "debug")
+    }
     listOf(
         iosX64(),
         iosArm64(),
@@ -131,5 +137,109 @@ configurations.names.forEach { name ->
                 attribute(Attribute.of("isFat", String::class.java), "true")
             }
         }
+    }
+}
+
+extra.apply {
+    val publishPropFile = rootProject.file("publish.properties")
+    if (publishPropFile.exists()) {
+        Properties()
+            .apply {
+                load(publishPropFile.inputStream())
+            }.forEach { name, value ->
+                if (name == "signing.secretKeyRingFile") {
+                    set(name.toString(), rootProject.file(value.toString()).absolutePath)
+                } else {
+                    set(name.toString(), value)
+                }
+            }
+    } else {
+        for ((envKey, key) in listOf(
+            "SIGNING_KEY_ID" to "signing.keyId",
+            "SIGNING_PASSWORD" to "signing.password",
+            "SIGNING_SECRET_KEY_RING_FILE" to "signing.secretKeyRingFile",
+            "OSSRH_USERNAME" to "ossrhUsername",
+            "OSSRH_PASSWORD" to "ossrhPassword",
+        )) {
+            if (envKey in System.getenv()) {
+                set(key, System.getenv(envKey))
+            }
+        }
+    }
+}
+
+val javadocJar by tasks.registering(Jar::class) {
+    archiveClassifier.set("javadoc")
+}
+// https://github.com/gradle/gradle/issues/26091
+val signingTasks = tasks.withType<Sign>()
+tasks.withType<AbstractPublishToMaven>().configureEach {
+    dependsOn(signingTasks)
+}
+tasks.register("publishToBuildDir") {
+    doLast {
+        extra.apply {
+            set("publishToBuildDir", true)
+        }
+    }
+    finalizedBy("publish")
+}
+
+publishing {
+    repositories {
+        maven {
+            url =
+                uri(
+                    if (rootProject.hasProperty("publishToBuildDir")) {
+                        layout.buildDirectory.dir("m2")
+                    } else if (version.toString().endsWith("SNAPSHOT")) {
+                        "https://s01.oss.sonatype.org/content/repositories/snapshots/"
+                    } else {
+                        "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
+                    },
+                )
+            if (listOf("ossrhUsername", "ossrhPassword").all { rootProject.hasProperty(it) }) {
+                credentials {
+                    username = rootProject.findProperty("ossrhUsername").toString()
+                    password = rootProject.findProperty("ossrhPassword").toString()
+                }
+            }
+        }
+    }
+
+    publications.withType<MavenPublication> {
+        artifact(javadocJar)
+        pom {
+            name.set("JsBridge")
+            description.set("A Kotlin Multiplatform library that provides JavaScript engine integration.")
+            url.set("https://github.com/zenmoney/JsBridge")
+
+            licenses {
+                license {
+                    name.set("MIT")
+                    url.set("https://opensource.org/licenses/MIT")
+                }
+            }
+            developers {
+                developer {
+                    id.set("Zenmoney")
+                    name.set("Zenmoney")
+                    email.set("support@zenmoney.app")
+                    organization.set("Zenmoney OU")
+                    organizationUrl.set("https://zenmoney.app")
+                }
+            }
+            scm {
+                url.set("https://github.com/zenmoney/JsBridge")
+                connection.set("scm:git:https://github.com/zenmoney/JsBridge.git")
+                developerConnection.set("scm:git:ssh://github.com:zenmoney/JsBridge.git")
+            }
+        }
+    }
+}
+
+if (listOf("signing.keyId", "signing.password", "signing.secretKeyRingFile").all { rootProject.hasProperty(it) }) {
+    signing {
+        sign(publishing.publications)
     }
 }

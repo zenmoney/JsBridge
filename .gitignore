@@ -44,3 +44,6 @@ gen/
 ehthumbs.db
 Thumbs.db
 *.swp
+
+# Credentials
+publish.properties
