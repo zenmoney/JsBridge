@@ -21,7 +21,7 @@ actual fun JsStringObject(
     JsStringObjectImpl(
         context,
         context.v8Runtime.createV8ValueStringObject(value),
-    ).also { context.registerValue(it) }
+    )
 
 internal class JsStringImpl(
     context: JsContext,

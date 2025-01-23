@@ -49,7 +49,6 @@ kotlin {
         val jvmAndAndroidMain by creating {
             dependsOn(commonMain)
             dependencies {
-                implementation("androidx.collection:collection:1.4.5")
                 compileOnly("com.caoccao.javet:javet:4.1.1")
             }
         }

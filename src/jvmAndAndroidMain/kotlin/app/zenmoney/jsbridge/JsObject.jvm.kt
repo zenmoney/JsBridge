@@ -11,10 +11,7 @@ actual sealed interface JsObject : JsValue {
     )
 }
 
-actual fun JsObject(context: JsContext): JsObject =
-    JsObjectImpl(context, context.v8Runtime.createV8ValueObject()).also {
-        context.registerValue(it)
-    }
+actual fun JsObject(context: JsContext): JsObject = JsObjectImpl(context, context.v8Runtime.createV8ValueObject())
 
 internal open class JsObjectImpl(
     context: JsContext,

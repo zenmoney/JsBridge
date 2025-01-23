@@ -18,6 +18,7 @@ import com.caoccao.javet.values.reference.V8ValueFunction
 import com.caoccao.javet.values.reference.V8ValueIntegerObject
 import com.caoccao.javet.values.reference.V8ValueLongObject
 import com.caoccao.javet.values.reference.V8ValueObject
+import com.caoccao.javet.values.reference.V8ValueReference
 import com.caoccao.javet.values.reference.V8ValueStringObject
 import com.caoccao.javet.values.reference.V8ValueTypedArray
 
@@ -29,8 +30,14 @@ internal open class JsValueImpl(
     final override val context: JsContext,
     val v8Value: V8Value,
 ) : JsValue {
+    init {
+        if (v8Value is V8ValueReference) {
+            v8Value.setWeak()
+        }
+    }
+
     override fun close() {
-        context.closeValue(this)
+        v8Value.close()
     }
 
     override fun toString(): String = v8Value.toString()
@@ -44,9 +51,6 @@ internal fun JsValue(
     context: JsContext,
     value: Any?,
 ): JsValue {
-    if (context.isClosed) {
-        throw IllegalStateException("JsContext has been already closed")
-    }
     if (value is V8Value) {
         if (value.v8Runtime != context.v8Runtime) {
             throw IllegalArgumentException("value runtime must match the JsContext runtime")
@@ -100,5 +104,5 @@ internal fun JsValue(
         is V8ValueFunction -> JsFunctionImpl(context, value)
         is V8ValueObject -> JsObjectImpl(context, value)
         else -> TODO()
-    }.also { context.registerValue(it) }
+    }
 }

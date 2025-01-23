@@ -28,7 +28,7 @@ actual fun JsNumberObject(
         is Int -> JsNumberObjectImpl(context, context.v8Runtime.createV8ValueIntegerObject(value))
         is Long -> JsNumberObjectImpl(context, context.v8Runtime.createV8ValueLongObject(value))
         else -> JsNumberObjectImpl(context, context.v8Runtime.createV8ValueDoubleObject(value.toDouble()))
-    }.also { context.registerValue(it) }
+    }
 
 internal class JsNumberImpl :
     JsValueImpl,

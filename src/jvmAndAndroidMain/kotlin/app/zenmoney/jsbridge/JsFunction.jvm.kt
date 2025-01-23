@@ -18,27 +18,27 @@ actual fun JsFunction(
     value: JsObject.(args: List<JsValue>) -> JsValue,
 ): JsFunction {
     val name = "f$value${value.hashCode()}".filter { it.isLetterOrDigit() }
+    val callbackContext =
+        JavetCallbackContext(
+            name,
+            JavetCallbackType.DirectCallThisAndResult,
+            IJavetDirectCallable.ThisAndResult<Exception> { thiz, args ->
+                (
+                    try {
+                        value(
+                            JsValue(context, thiz.toClone()).also { thiz.close() } as JsObject,
+                            args.map { arg -> JsValue(context, arg.toClone()).also { arg.close() } },
+                        )
+                    } catch (e: Exception) {
+                        context.throwExceptionToJs(e)
+                    } as JsValueImpl
+                ).v8Value
+            },
+        )
     return JsFunctionImpl(
         context,
-        context.v8Runtime.createV8ValueFunction(
-            JavetCallbackContext(
-                name,
-                JavetCallbackType.DirectCallThisAndResult,
-                IJavetDirectCallable.ThisAndResult<Exception> { thiz, args ->
-                    (
-                        try {
-                            value(
-                                JsValue(context, thiz.toClone()).also { thiz.close() } as JsObject,
-                                args.map { arg -> JsValue(context, arg.toClone()).also { arg.close() } },
-                            )
-                        } catch (e: Exception) {
-                            context.throwExceptionToJs(e)
-                        } as JsValueImpl
-                    ).v8Value
-                },
-            ),
-        ),
-    ).also { context.registerValue(it) }
+        context.v8Runtime.createV8ValueFunction(callbackContext),
+    ).also { context.registerCallbackContextHandle(callbackContext.handle) }
 }
 
 internal class JsFunctionImpl(
