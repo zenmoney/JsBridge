@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "app.zenmoney.jsbridge"
-version = "1.0"
+version = "1.0.1"
 
 repositories {
     google()
@@ -50,12 +50,13 @@ kotlin {
             dependsOn(commonMain)
             dependencies {
                 implementation("androidx.collection:collection:1.4.5")
-                implementation("com.caoccao.javet:javet:4.1.1")
+                compileOnly("com.caoccao.javet:javet:4.1.1")
             }
         }
         val jvmMain by getting {
             dependsOn(jvmAndAndroidMain)
             dependencies {
+                implementation("com.caoccao.javet:javet:4.1.1")
                 implementation("com.caoccao.javet:javet-v8-linux-arm64:4.1.1")
                 implementation("com.caoccao.javet:javet-v8-linux-x86_64:4.1.1")
                 implementation("com.caoccao.javet:javet-v8-macos-arm64:4.1.1")
