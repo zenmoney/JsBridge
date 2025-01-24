@@ -101,7 +101,9 @@ actual class JsContext : AutoCloseable {
             val e =
                 JsException(
                     message,
-                    lastException?.takeIf { "Error: ${it.message}" == message },
+                    lastException?.takeIf {
+                        "Error: ${it.message}" == message || message == "Error: Uncaught JavaError in function callback"
+                    },
                     (if (error is JsObject) error.toPlainMap() else null) ?: emptyMap(),
                 )
             lastException = null

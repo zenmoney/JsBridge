@@ -27,7 +27,7 @@ actual fun JsFunction(
                     try {
                         value(
                             JsValue(context, thiz.toClone()).also { thiz.close() } as JsObject,
-                            args.map { arg -> JsValue(context, arg.toClone()).also { arg.close() } },
+                            args?.map { arg -> JsValue(context, arg.toClone()).also { arg.close() } } ?: emptyList(),
                         )
                     } catch (e: Exception) {
                         context.throwExceptionToJs(e)

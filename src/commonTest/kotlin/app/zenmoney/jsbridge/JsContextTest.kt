@@ -100,6 +100,28 @@ class JsContextTest {
     }
 
     @Test
+    fun throwsJsExceptionWithNativeExceptionCauseWithEmptyMessage() {
+        var exception: Exception? = null
+        val f =
+            JsFunction(context) { args ->
+                exception = NullPointerException()
+                throw exception!!
+            }
+
+        context.globalObject["f"] = f
+        try {
+            context.evaluateScript("f(1, 2)")
+            assertTrue(false)
+        } catch (e: JsException) {
+            assertEquals(exception, e.cause)
+            assertEquals(
+                emptyMap(),
+                e.data,
+            )
+        }
+    }
+
+    @Test
     fun returnsBoolean() {
         val value = context.evaluateScript("true")
         assertIs<JsBoolean>(value)
@@ -208,6 +230,20 @@ class JsContextTest {
         val b1 = context.evaluateScript("var b = [1]; b")
         assertNotEquals(a1, b1)
         assertNotEquals(a2, b1)
+    }
+
+    @Test
+    fun callsNativeFunctionWithoutArguments() {
+        var callCount = 0
+        context.globalObject["f"] =
+            JsFunction(context) { args ->
+                callCount++
+                assertEquals(emptyList(), args)
+                JsNumber(context, 3)
+            }
+        val result = context.evaluateScript("f()")
+        assertEquals(1, callCount)
+        assertEquals(JsNumber(context, 3), result)
     }
 
     @Test
