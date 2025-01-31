@@ -69,6 +69,13 @@ kotlin {
                 implementation("com.caoccao.javet:javet-v8-android:4.1.1")
             }
         }
+        val androidInstrumentedTest by getting {
+            dependsOn(commonTest)
+            dependencies {
+                implementation("androidx.test:runner:1.6.2")
+            }
+        }
+
         val darwinMain by creating {
             dependsOn(commonMain)
         }
@@ -109,7 +116,9 @@ android {
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
         minSdk = 24
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
