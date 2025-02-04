@@ -13,7 +13,15 @@ actual sealed interface JsUint8Array : JsValue {
 actual fun JsUint8Array(
     context: JsContext,
     value: ByteArray,
-): JsUint8Array = JsValue(context, value) as JsUint8Array
+): JsUint8Array =
+    JsUint8ArrayImpl(
+        context,
+        context.jsUint8Array.constructWithArguments(
+            listOf(
+                JSValue.valueWithObject(value.asList(), context.jsContext)!!,
+            ),
+        )!!,
+    )
 
 internal class JsUint8ArrayImpl(
     context: JsContext,

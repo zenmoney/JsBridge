@@ -39,6 +39,7 @@ internal fun JsValue(
         is Int -> JsNumberImpl(context, JSValue.valueWithInt32(value, context.jsContext)!!)
         is Number -> JsNumberImpl(context, JSValue.valueWithDouble(value.toDouble(), context.jsContext)!!)
         is String -> JsStringImpl(context, JSValue.valueWithObject(value, context.jsContext)!!)
+        is ByteArray -> JsUint8Array(context, value)
         is JSValue ->
             when {
                 value.isNull -> context.NULL

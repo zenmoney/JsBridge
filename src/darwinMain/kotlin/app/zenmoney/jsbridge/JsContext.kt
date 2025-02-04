@@ -28,6 +28,8 @@ actual class JsContext : AutoCloseable {
             appZenmoneyTypeOf;
             """.trimIndent(),
         )!!
+    internal val jsUint8Array = jsContext.evaluateScript("Uint8Array")!!
+
     private var jsCallFunction =
         jsContext.evaluateScript(
             """
