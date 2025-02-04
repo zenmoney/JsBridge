@@ -193,6 +193,30 @@ class JsContextTest {
     }
 
     @Test
+    fun passesUint8ArrayToJs() {
+        val arr1 = JsUint8Array(context, byteArrayOf(1, 2, 3, 127, 128.toByte(), 255.toByte()))
+        context.globalObject["arr"] = arr1
+        val arr2 = context.globalObject["arr"]
+        assertIs<JsUint8Array>(arr2)
+        val isEqual =
+            context.evaluateScript(
+                """
+                (function (arr1, arr2) {
+                    if (arr1 instanceof Uint8Array !== arr2 instanceof Uint8Array) {
+                        return false;
+                    }
+                    if (arr1.length !== arr2.length) {
+                        return false;
+                    }
+                    return arr1.every((value, index) => value === arr2[index]);
+                })(arr, Uint8Array.from([1, 2, 3, 127, 128, 255]))
+                """.trimIndent(),
+            )
+        assertIs<JsBoolean>(isEqual)
+        assertTrue(isEqual.toBoolean())
+    }
+
+    @Test
     fun returnsDate() {
         val value = context.evaluateScript("new Date(45678)")
         assertIs<JsDate>(value)
@@ -301,6 +325,29 @@ class JsContextTest {
     }
 
     @Test
+    fun callsNativeFunctionReturningArrayOfObjects() {
+        var callCount = 0
+        context.globalObject["f"] =
+            JsFunction(context) {
+                callCount++
+                JsArray(
+                    context,
+                    ('a'..'z').map { context.evaluateScript("var obj = {$it: '$it'}; obj") },
+                )
+            }
+        val result = context.evaluateScript("f()")
+        assertEquals(1, callCount)
+        assertIs<JsArray>(result)
+        assertEquals(26, result.size)
+        assertEquals(
+            ('a'..'z').map {
+                mapOf(it.toString() to it.toString())
+            },
+            result.toPlainList(),
+        )
+    }
+
+    @Test
     fun callsJsFunction() {
         context.evaluateScript("var callCount = 0;")
         val f =
@@ -373,5 +420,19 @@ class JsContextTest {
             ),
         )
         assertEquals(JsNumber(context, 2), context.evaluateScript("callCount"))
+    }
+
+    @Test
+    fun changesAreVisibleToBothJsAndNativeCode() {
+        val a = JsObject(context)
+        context.globalObject["a"] = a
+        val b = JsObject(context)
+        a["b"] = b
+        b["c"] = JsNumber(context, 5)
+        assertEquals(JsNumber(context, 5), context.evaluateScript("a.b.c"))
+        context.evaluateScript("a.b.c = '6';")
+        assertEquals(JsString(context, "6"), context.evaluateScript("a.b.c"))
+        b["c"] = JsNumber(context, 8)
+        assertEquals(JsBoolean(context, true), context.evaluateScript("a.b.c == 8"))
     }
 }
