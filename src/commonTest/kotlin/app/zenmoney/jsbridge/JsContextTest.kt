@@ -276,17 +276,19 @@ class JsContextTest {
         context.globalObject["f"] =
             JsFunction(context) { args ->
                 callCount++
-                assertEquals(2, args.size)
+                assertEquals(4, args.size)
                 assertEquals(
                     listOf(
                         JsNumber(context, 1),
+                        context.NULL,
+                        context.UNDEFINED,
                         JsNumber(context, 2),
                     ),
                     args,
                 )
                 JsNumber(context, 5)
             }
-        val result = context.evaluateScript("f(1, 2)")
+        val result = context.evaluateScript("f(1, null, undefined, 2)")
         assertEquals(1, callCount)
         assertEquals(JsNumber(context, 5), result)
     }

@@ -12,7 +12,7 @@ actual sealed interface JsFunction : JsObject {
     ): JsValue
 }
 
-private fun <T> V8Array.map(action: (Any) -> T): List<T> {
+private fun <T> V8Array.map(action: (Any?) -> T): List<T> {
     val result = arrayListOf<T>()
     var i = 0
     while (i < length()) {
