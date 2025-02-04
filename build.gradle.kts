@@ -64,9 +64,8 @@ kotlin {
             }
         }
         val androidMain by getting {
-            dependsOn(jvmAndAndroidMain)
             dependencies {
-                implementation("com.caoccao.javet:javet-v8-android:4.1.1")
+                implementation("com.eclipsesource.j2v8:j2v8:6.2.1@aar")
             }
         }
         val androidInstrumentedTest by getting {
