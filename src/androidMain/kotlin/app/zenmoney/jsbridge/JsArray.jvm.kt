@@ -52,4 +52,4 @@ actual fun JsArray(
                 }
             }
         },
-    )
+    ).also { context.registerValue(it) }

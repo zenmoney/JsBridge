@@ -3,16 +3,26 @@ package app.zenmoney.jsbridge
 import com.eclipsesource.v8.V8
 import com.eclipsesource.v8.V8Function
 import com.eclipsesource.v8.V8Value
+import java.util.Collections
+import java.util.IdentityHashMap
 
 actual class JsContext : AutoCloseable {
     private var lastException: Exception? = null
     private var callFunction: JsFunction? = null
 
     internal val v8Runtime: V8 = V8.createV8Runtime()
+    private val v8Values: MutableSet<V8Value> = Collections.newSetFromMap(IdentityHashMap())
 
-    actual val globalObject: JsObject = JsObjectImpl(this, v8Runtime.executeObjectScript("this"))
+    actual val globalObject: JsObject = JsObjectImpl(this, v8Runtime.executeObjectScript("this")).also { registerValue(it) }
     actual val NULL: JsValue = JsValueImpl(this, null)
-    actual val UNDEFINED: JsValue = JsValueImpl(this, v8Runtime.executeScript("undefined"))
+    actual val UNDEFINED: JsValue = JsValueImpl(this, v8Runtime.executeScript("undefined")).also { registerValue(it) }
+
+    internal val cachedValues =
+        listOf(
+            NULL,
+            UNDEFINED,
+            globalObject,
+        )
 
     actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
 
@@ -62,19 +72,11 @@ actual class JsContext : AutoCloseable {
             appZenmoneyGetTime
             """.trimIndent(),
         ) as V8Function
-    internal val jsToString: V8Function =
-        v8Runtime.executeScript(
-            """
-            function appZenmoneyToString() {
-                return this.toString();
-            };
-            appZenmoneyToString
-            """.trimIndent(),
-        ) as V8Function
     internal val jsTypeOf: V8Function =
         v8Runtime.executeScript(
             """
-            function appZenmoneyTypeOf(value) {
+            function appZenmoneyTypeOf() {
+                const value = this;
                 if (value instanceof Boolean) {
                     return 'boolean';
                 } else if (value instanceof Date) {
@@ -143,20 +145,21 @@ actual class JsContext : AutoCloseable {
                     """.trimIndent(),
                 ) as JsFunction
         }
+        val fullArgs =
+            JsArray(
+                this,
+                listOf(
+                    f,
+                    thiz,
+                    *args.toTypedArray(),
+                ),
+            )
         val v8Value: Any =
             (callFunction as JsFunctionImpl).v8Function.call(
-                (globalObject as JsObjectImpl).v8Object,
-                (
-                    JsArray(
-                        this,
-                        listOf(
-                            f,
-                            thiz,
-                            *args.toTypedArray(),
-                        ),
-                    ) as JsArrayImpl
-                ).v8Array,
+                null,
+                (fullArgs as JsArrayImpl).v8Array,
             )
+        fullArgs.close()
         throwExceptionIfNeeded {
             if (v8Value is V8Value) {
                 v8Value.close()
@@ -204,7 +207,21 @@ actual class JsContext : AutoCloseable {
         throw e
     }
 
+    internal fun registerValue(value: JsValueImpl) {
+        if (value.v8Value is V8Value) {
+            v8Values.add(value.v8Value)
+        }
+    }
+
+    internal fun closeValue(value: JsValueImpl) {
+        if (value.v8Value is V8Value && value !in cachedValues) {
+            value.v8Value.close()
+        }
+    }
+
     actual override fun close() {
+        v8Values.forEach { it.close() }
+        v8Values.clear()
         jsGetTime.close()
         jsTypeOf.close()
         v8Runtime.close()

@@ -12,7 +12,7 @@ actual sealed interface JsObject : JsValue {
     )
 }
 
-actual fun JsObject(context: JsContext): JsObject = JsObjectImpl(context, V8Object(context.v8Runtime))
+actual fun JsObject(context: JsContext): JsObject = JsObjectImpl(context, V8Object(context.v8Runtime)).also { context.registerValue(it) }
 
 internal open class JsObjectImpl(
     context: JsContext,

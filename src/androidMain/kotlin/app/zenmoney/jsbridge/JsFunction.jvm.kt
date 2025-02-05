@@ -31,21 +31,21 @@ actual fun JsFunction(
             (
                 try {
                     value(
-                        JsValue(context, thiz.twin()).also { thiz.close() } as JsObject,
-                        args?.map { arg ->
-                            if (arg is V8Value) {
-                                JsValue(context, arg.twin()).also { arg.close() }
-                            } else {
-                                JsValue(context, arg)
-                            }
-                        } ?: emptyList(),
+                        JsValue(context, thiz.twin()) as JsObject,
+                        args?.map { JsValue(context, it) } ?: emptyList(),
                     )
                 } catch (e: Exception) {
                     context.throwExceptionToJs(e)
                 } as JsValueImpl
-            ).v8Value
+            ).v8Value.let {
+                if (it is V8Value) {
+                    it.twin()
+                } else {
+                    it
+                }
+            }
         },
-    )
+    ).also { context.registerValue(it) }
 
 internal class JsFunctionImpl(
     context: JsContext,
