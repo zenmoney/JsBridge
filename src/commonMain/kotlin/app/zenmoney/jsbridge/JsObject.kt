@@ -15,7 +15,11 @@ val JsObject.keys: Set<String>
     get() =
         context.evaluateScript("Object.keys").use { keysFunc ->
             (keysFunc as JsFunction).apply(context.globalObject, listOf(this)).use { keys ->
-                (keys as JsArray).mapTo(linkedSetOf()) { it.toString() }
+                (keys as JsArray).mapTo(linkedSetOf()) {
+                    val key = it.toString()
+                    it.close()
+                    key
+                }
             }
         }
 
