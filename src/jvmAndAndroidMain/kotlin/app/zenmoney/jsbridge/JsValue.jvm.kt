@@ -18,7 +18,6 @@ import com.caoccao.javet.values.reference.V8ValueFunction
 import com.caoccao.javet.values.reference.V8ValueIntegerObject
 import com.caoccao.javet.values.reference.V8ValueLongObject
 import com.caoccao.javet.values.reference.V8ValueObject
-import com.caoccao.javet.values.reference.V8ValueReference
 import com.caoccao.javet.values.reference.V8ValueStringObject
 import com.caoccao.javet.values.reference.V8ValueTypedArray
 
@@ -30,14 +29,8 @@ internal open class JsValueImpl(
     final override val context: JsContext,
     val v8Value: V8Value,
 ) : JsValue {
-    init {
-        if (v8Value is V8ValueReference) {
-            v8Value.setWeak()
-        }
-    }
-
     override fun close() {
-        v8Value.close()
+        context.closeValue(this)
     }
 
     override fun toString(): String = v8Value.toString()
@@ -51,9 +44,18 @@ internal fun JsValue(
     context: JsContext,
     value: Any?,
 ): JsValue {
+    if (value == null) {
+        return context.NULL
+    }
     if (value is V8Value) {
         if (value.v8Runtime != context.v8Runtime) {
             throw IllegalArgumentException("value runtime must match the JsContext runtime")
+        }
+        if (value is V8ValueNull) {
+            return context.NULL
+        }
+        if (value is V8ValueUndefined) {
+            return context.UNDEFINED
         }
         if (value is V8ValueObject &&
             value !== (context.globalObject as JsValueImpl).v8Value &&
@@ -62,14 +64,6 @@ internal fun JsValue(
             value.close()
             return context.globalObject
         }
-    }
-    when (value) {
-        is JsValue -> return value
-        null,
-        is V8ValueNull,
-        -> return context.NULL
-        is V8ValueUndefined -> return context.UNDEFINED
-        else -> {}
     }
     return when (value) {
         is Boolean -> JsBooleanImpl(context, context.v8Runtime.createV8ValueBoolean(value))
@@ -104,5 +98,5 @@ internal fun JsValue(
         is V8ValueFunction -> JsFunctionImpl(context, value)
         is V8ValueObject -> JsObjectImpl(context, value)
         else -> TODO()
-    }
+    }.also { context.registerValue(it) }
 }

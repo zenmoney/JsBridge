@@ -8,14 +8,15 @@ actual class JsContext : AutoCloseable {
     private var lastException: Exception? = null
 
     internal val v8Runtime: V8Runtime = V8Host.getV8Instance().createV8Runtime()
+    private val v8Values = hashSetOf<V8Value>()
 
     private var callFunction: JsFunction? = null
     private var callbackContextIndex = 0
     private var callbackContextHandles = LongArray(10) { 0 }
 
-    actual val globalObject: JsObject = JsObjectImpl(this, v8Runtime.getExecutor("this").execute())
-    actual val NULL: JsValue = JsValueImpl(this, v8Runtime.createV8ValueNull())
-    actual val UNDEFINED: JsValue = JsValueImpl(this, v8Runtime.createV8ValueUndefined())
+    actual val globalObject: JsObject = JsObjectImpl(this, v8Runtime.getExecutor("this").execute()).also { registerValue(it) }
+    actual val NULL: JsValue = JsValueImpl(this, v8Runtime.createV8ValueNull()).also { registerValue(it) }
+    actual val UNDEFINED: JsValue = JsValueImpl(this, v8Runtime.createV8ValueUndefined()).also { registerValue(it) }
 
     actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
 
@@ -122,6 +123,17 @@ actual class JsContext : AutoCloseable {
         throw e
     }
 
+    internal fun registerValue(value: JsValueImpl) {
+        v8Values.add(value.v8Value)
+    }
+
+    internal fun closeValue(value: JsValueImpl) {
+        if (value.v8Value !== (globalObject as JsValueImpl).v8Value) {
+            value.v8Value.close()
+            v8Values.remove(value.v8Value)
+        }
+    }
+
     internal fun registerCallbackContextHandle(handle: Long) {
         if (callbackContextHandles.size <= callbackContextIndex) {
             callbackContextHandles = callbackContextHandles.copyOf(callbackContextHandles.size * 3 / 2)
@@ -130,6 +142,8 @@ actual class JsContext : AutoCloseable {
     }
 
     actual override fun close() {
+        v8Values.forEach { it.close() }
+        v8Values.clear()
         callbackContextHandles.forEach { v8Runtime.removeCallbackContext(it) }
         callbackContextIndex = 0
         v8Runtime.close()

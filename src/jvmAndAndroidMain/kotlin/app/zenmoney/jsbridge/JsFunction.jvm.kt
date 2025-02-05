@@ -26,19 +26,22 @@ actual fun JsFunction(
                 (
                     try {
                         value(
-                            JsValue(context, thiz.toClone()).also { thiz.close() } as JsObject,
-                            args?.map { arg -> JsValue(context, arg.toClone()).also { arg.close() } } ?: emptyList(),
+                            JsValue(context, thiz.toClone()) as JsObject,
+                            args?.map { arg -> JsValue(context, arg.toClone()) } ?: emptyList(),
                         )
                     } catch (e: Exception) {
                         context.throwExceptionToJs(e)
                     } as JsValueImpl
-                ).v8Value
+                ).v8Value.toClone()
             },
         )
     return JsFunctionImpl(
         context,
         context.v8Runtime.createV8ValueFunction(callbackContext),
-    ).also { context.registerCallbackContextHandle(callbackContext.handle) }
+    ).also {
+        context.registerValue(it)
+        context.registerCallbackContextHandle(callbackContext.handle)
+    }
 }
 
 internal class JsFunctionImpl(

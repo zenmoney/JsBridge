@@ -23,7 +23,7 @@ actual fun JsBooleanObject(
     JsBooleanObjectImpl(
         context,
         context.v8Runtime.createV8ValueBooleanObject(value),
-    )
+    ).also { context.registerValue(it) }
 
 internal class JsBooleanImpl(
     context: JsContext,
