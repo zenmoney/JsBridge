@@ -437,4 +437,24 @@ class JsContextTest {
         b["c"] = JsNumber(context, 8)
         assertEquals(JsBoolean(context, true), context.evaluateScript("a.b.c == 8"))
     }
+
+    @Test
+    fun objectReturnedFromNativeFunctionIsNotClosedAutomatically() {
+        var callCount = 0
+        val a = JsObject(context)
+        val b = JsObject(context)
+        a["b"] = b
+        context.globalObject["f"] =
+            JsFunction(context) { args ->
+                callCount++
+                a
+            }
+        val result = context.evaluateScript("var obj = f()")
+        assertEquals(context.UNDEFINED, result)
+        assertEquals(1, callCount)
+        a["c"] = JsNumber(context, 1)
+        a["d"] = JsNumber(context, 2)
+        b.close()
+        a.close()
+    }
 }
