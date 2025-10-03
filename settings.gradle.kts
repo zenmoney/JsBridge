@@ -2,7 +2,7 @@ pluginManagement {
     resolutionStrategy {
         eachPlugin {
             if (requested.id.id == "com.android.library") {
-                useModule("com.android.tools.build:gradle:8.5.2")
+                useModule("com.android.tools.build:gradle:8.13.0")
             }
         }
     }
@@ -12,10 +12,9 @@ pluginManagement {
         mavenCentral()
     }
     plugins {
-        kotlin("multiplatform") version "2.0.21"
-        kotlin("plugin.serialization") version "2.0.21"
-        id("org.jetbrains.kotlin.xcode-compat") version "0.2.5"
-        id("org.jlleitschuh.gradle.ktlint") version "12.1.1"
+        kotlin("multiplatform") version "2.2.20"
+        kotlin("plugin.serialization") version "2.2.20"
+        id("org.jlleitschuh.gradle.ktlint") version "13.1.0"
     }
 }
 

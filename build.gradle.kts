@@ -18,7 +18,7 @@ repositories {
 }
 
 ktlint {
-    version.set("1.4.1")
+    version.set("1.7.1")
 }
 
 kotlin {
@@ -33,7 +33,7 @@ kotlin {
         iosSimulatorArm64(),
     ).forEach { iosTarget ->
         iosTarget.binaries.framework {
-            baseName = "jsbridge"
+            baseName = "JsBridge"
         }
     }
     macosX64()
@@ -49,18 +49,18 @@ kotlin {
         val jvmAndAndroidMain by creating {
             dependsOn(commonMain)
             dependencies {
-                compileOnly("com.caoccao.javet:javet:4.1.1")
+                compileOnly("com.caoccao.javet:javet:4.1.7")
             }
         }
         val jvmMain by getting {
             dependsOn(jvmAndAndroidMain)
             dependencies {
-                implementation("com.caoccao.javet:javet:4.1.1")
-                implementation("com.caoccao.javet:javet-v8-linux-arm64:4.1.1")
-                implementation("com.caoccao.javet:javet-v8-linux-x86_64:4.1.1")
-                implementation("com.caoccao.javet:javet-v8-macos-arm64:4.1.1")
-                implementation("com.caoccao.javet:javet-v8-macos-x86_64:4.1.1")
-                implementation("com.caoccao.javet:javet-v8-windows-x86_64:4.1.1")
+                implementation("com.caoccao.javet:javet:4.1.7")
+                implementation("com.caoccao.javet:javet-v8-linux-arm64:4.1.7")
+                implementation("com.caoccao.javet:javet-v8-linux-x86_64:4.1.7")
+                implementation("com.caoccao.javet:javet-v8-macos-arm64:4.1.7")
+                implementation("com.caoccao.javet:javet-v8-macos-x86_64:4.1.7")
+                implementation("com.caoccao.javet:javet-v8-windows-x86_64:4.1.7")
             }
         }
         val androidMain by getting {
@@ -71,7 +71,7 @@ kotlin {
         val androidInstrumentedTest by getting {
             dependsOn(commonTest)
             dependencies {
-                implementation("androidx.test:runner:1.6.2")
+                implementation("androidx.test:runner:1.7.0")
             }
         }
 
@@ -111,7 +111,7 @@ kotlin {
 
 android {
     namespace = "app.zenmoney.jsbridge"
-    compileSdk = 34
+    compileSdk = 35
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
         minSdk = 24
