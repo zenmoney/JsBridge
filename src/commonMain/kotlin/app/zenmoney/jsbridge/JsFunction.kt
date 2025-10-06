@@ -12,3 +12,8 @@ expect fun JsFunction(
     context: JsContext,
     value: JsObject.(args: List<JsValue>) -> JsValue,
 ): JsFunction
+
+operator fun JsFunction.invoke(
+    args: List<JsValue> = emptyList(),
+    thiz: JsValue = context.globalObject,
+): JsValue = apply(thiz, args.toList())
