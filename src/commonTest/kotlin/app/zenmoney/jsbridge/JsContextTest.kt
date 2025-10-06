@@ -1,5 +1,7 @@
 package app.zenmoney.jsbridge
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runTest
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -478,4 +480,82 @@ class JsContextTest {
             e.data,
         )
     }
+
+    @Test
+    fun resolvesPromiseValue() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+            val result =
+                context.evaluateScript(
+                    """
+                    new Promise((resolve) => {
+                        setTimeout(() => resolve(5), 50);
+                    })
+                    """.trimIndent(),
+                )
+            assertIs<JsObject>(result)
+            assertEquals(JsNumber(context, 5), result.await())
+            eventLoop.runUntilIdle()
+        }
+
+    @Test
+    fun throwsJsExceptionOnPromiseError() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+            val result =
+                context.evaluateScript(
+                    """
+                    new Promise((resolve, reject) => {
+                        setTimeout(() => {
+                            const e = new Error("my error message");
+                            e.a = 1.4;
+                            e.b = "2";
+                            e.c = {c: ["ccc"]};
+                            reject(e);
+                        }, 50);
+                    })
+                    """.trimIndent(),
+                )
+            assertIs<JsObject>(result)
+            try {
+                result.await()
+                assertTrue(false)
+            } catch (e: JsException) {
+                assertEquals("Error: my error message", e.message)
+                assertEquals(
+                    mapOf("a" to 1.4, "b" to "2", "c" to mapOf("c" to listOf("ccc"))),
+                    e.data,
+                )
+            }
+            eventLoop.runUntilIdle()
+        }
+
+    @Test
+    fun callsNativeAsyncFunction() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+            context.globalObject["f"] =
+                JsFunction(context) {
+                    with(eventLoop) {
+                        async { JsNumber(context, 5) }.toJsPromise(context)
+                    }
+                }
+            val a = context.evaluateScript("var a = [1]; a;")
+            context.evaluateScript("f().then((result) => { a.push(result); });")
+            assertIs<JsArray>(a)
+            assertEquals(1, a.size)
+            assertEquals(JsNumber(context, 1), a[0])
+            eventLoop.runUntilIdle()
+            assertEquals(2, a.size)
+            assertEquals(JsNumber(context, 5), a[1])
+        }
 }
