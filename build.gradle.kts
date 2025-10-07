@@ -39,6 +39,7 @@ kotlin {
     macosX64()
     macosArm64()
 
+    applyDefaultHierarchyTemplate()
     sourceSets {
         val commonMain by getting
         val commonTest by getting {
@@ -75,24 +76,11 @@ kotlin {
             }
         }
 
-        val darwinMain by creating {
-            dependsOn(commonMain)
-        }
-        val iosX64Main by getting {
-            dependsOn(darwinMain)
-        }
-        val iosArm64Main by getting {
-            dependsOn(darwinMain)
-        }
-        val iosSimulatorArm64Main by getting {
-            dependsOn(darwinMain)
-        }
-        val macosX64Main by getting {
-            dependsOn(darwinMain)
-        }
-        val macosArm64Main by getting {
-            dependsOn(darwinMain)
-        }
+        val iosX64Main by getting
+        val iosArm64Main by getting
+        val iosSimulatorArm64Main by getting
+        val macosX64Main by getting
+        val macosArm64Main by getting
     }
 
     sourceSets.all {
