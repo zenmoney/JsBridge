@@ -57,6 +57,7 @@ internal fun JsValue(
                         type == "string" -> JsStringObjectImpl(context, value)
                         type == "function" -> JsFunctionImpl(context, value)
                         type == "Uint8Array" -> JsUint8ArrayImpl(context, value)
+                        type == "Promise" -> JsPromiseImpl(context, value)
                         value.isObject -> JsObjectImpl(context, value)
                         else -> TODO()
                     }

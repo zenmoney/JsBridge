@@ -53,6 +53,15 @@ actual class JsContext : AutoCloseable {
             appZenmoneyNumber
             """.trimIndent(),
         ) as JsFunction
+    internal val createPromise: JsFunction =
+        evaluateScript(
+            """
+            function appZenmoneyPromise(executor) {
+                return new Promise(executor);
+            };
+            appZenmoneyPromise;
+            """.trimIndent(),
+        ) as JsFunction
     internal val createStringObject: JsFunction =
         evaluateScript(
             """
@@ -85,6 +94,8 @@ actual class JsContext : AutoCloseable {
                     return 'number';
                 } else if (value instanceof String) {
                     return 'string';
+                } else if (value instanceof Promise || typeof value === 'object' && value && typeof value.then === 'function') {
+                    return 'Promise';
                 }
                 return typeof value;
             };

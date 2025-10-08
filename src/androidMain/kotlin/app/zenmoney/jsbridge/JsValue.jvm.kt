@@ -80,6 +80,7 @@ internal fun JsValue(
                 "date" -> JsDateImpl(context, value)
                 "number" -> JsNumberObjectImpl(context, value)
                 "string" -> JsStringObjectImpl(context, value)
+                "Promise" -> JsPromiseImpl(context, value)
                 else -> JsObjectImpl(context, value)
             }
         }

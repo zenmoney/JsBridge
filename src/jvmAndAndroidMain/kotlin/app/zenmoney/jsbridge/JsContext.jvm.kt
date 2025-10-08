@@ -20,6 +20,20 @@ actual class JsContext : AutoCloseable {
 
     actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
 
+    internal val createPromise: JsFunction =
+        JsFunctionImpl(
+            this,
+            v8Runtime
+                .getExecutor(
+                    """
+                    function appZenmoneyPromise(executor) {
+                        return new Promise(executor);
+                    };
+                    appZenmoneyPromise;
+                    """.trimIndent(),
+                ).execute(),
+        ).also { registerValue(it) }
+
     @Throws(JsException::class)
     actual fun evaluateScript(script: String): JsValue {
         val v8Value: V8Value =

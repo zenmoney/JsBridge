@@ -18,6 +18,7 @@ import com.caoccao.javet.values.reference.V8ValueFunction
 import com.caoccao.javet.values.reference.V8ValueIntegerObject
 import com.caoccao.javet.values.reference.V8ValueLongObject
 import com.caoccao.javet.values.reference.V8ValueObject
+import com.caoccao.javet.values.reference.V8ValuePromise
 import com.caoccao.javet.values.reference.V8ValueStringObject
 import com.caoccao.javet.values.reference.V8ValueTypedArray
 
@@ -96,7 +97,13 @@ internal fun JsValue(
             }
         is V8ValueArray -> JsArrayImpl(context, value)
         is V8ValueFunction -> JsFunctionImpl(context, value)
-        is V8ValueObject -> JsObjectImpl(context, value)
+        is V8ValuePromise -> JsPromiseImpl(context, value)
+        is V8ValueObject ->
+            if (value.has("then") && value.get<V8Value>("then").use { it is V8ValueFunction }) {
+                JsPromiseImpl(context, value)
+            } else {
+                JsObjectImpl(context, value)
+            }
         else -> TODO()
     }.also { context.registerValue(it) }
 }

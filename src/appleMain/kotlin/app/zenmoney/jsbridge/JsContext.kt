@@ -10,6 +10,7 @@ actual class JsContext : AutoCloseable {
     internal val jsContext = JSContext()
     internal val jsDate = jsContext.evaluateScript("Date")!!
     internal val jsDefineProperty = jsContext.evaluateScript("Object.defineProperty")!!
+    internal val jsPromise = jsContext.evaluateScript("Promise")!!
     internal val jsTypeOf =
         jsContext.evaluateScript(
             """
@@ -22,6 +23,8 @@ actual class JsContext : AutoCloseable {
                     return 'string';
                 } else if (value instanceof Uint8Array) {
                     return 'Uint8Array';
+                } else if (value instanceof Promise || typeof value === 'object' && value && typeof value.then === 'function') {
+                    return 'Promise';
                 }
                 return typeof value;
             };
