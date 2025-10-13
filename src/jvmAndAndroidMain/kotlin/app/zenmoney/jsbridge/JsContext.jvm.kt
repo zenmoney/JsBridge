@@ -11,6 +11,7 @@ actual class JsContext : AutoCloseable {
     private val v8Values = hashSetOf<V8Value>()
 
     private var callFunction: JsFunction? = null
+
     private var callbackContextIndex = 0
     private var callbackContextHandles = LongArray(10) { 0 }
 
@@ -20,6 +21,19 @@ actual class JsContext : AutoCloseable {
 
     actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
 
+    internal val callFunctionAsConstructor: JsFunction =
+        JsFunctionImpl(
+            this,
+            v8Runtime
+                .getExecutor(
+                    """
+                    function appZenmoneyCallFunctionAsConstructor(f, ...args) {
+                        return new f(...args);
+                    };
+                    appZenmoneyCallFunctionAsConstructor;
+                    """.trimIndent(),
+                ).execute(),
+        ).also { registerValue(it) }
     internal val createPromise: JsFunction =
         JsFunctionImpl(
             this,

@@ -558,4 +558,42 @@ class JsContextTest {
             assertEquals(2, a.size)
             assertEquals(JsNumber(context, 5), a[1])
         }
+
+    @Test
+    fun callsNativeFunctionAsConstructor() {
+        var callCount = 0
+        var thiz: JsValue? = null
+        context.globalObject["f"] =
+            JsFunction(context) { args ->
+                callCount++
+                assertEquals(4, args.size)
+                assertEquals(
+                    listOf(
+                        JsNumber(context, 1),
+                        context.NULL,
+                        context.UNDEFINED,
+                        JsNumber(context, 2),
+                    ),
+                    args,
+                )
+                thiz = this
+                context.UNDEFINED
+            }
+        val result = context.evaluateScript("new f(1, null, undefined, 2)")
+        assertEquals(1, callCount)
+        assertEquals(thiz, result)
+        assertIs<JsObject>(result)
+        assertNotEquals(context.globalObject, result)
+    }
+
+    @Test
+    fun callsFunctionAsConstructor() {
+        val errorFunction = context.evaluateScript("Error")
+        assertIs<JsFunction>(errorFunction)
+        val error = errorFunction.applyAsConstructor(listOf(JsString(context, "my message")))
+        assertIs<JsObject>(error)
+        context.globalObject["error"] = error
+        assertEquals(JsBoolean(context, true), context.evaluateScript("error instanceof Error"))
+        assertEquals(JsString(context, "my message"), context.evaluateScript("error.message"))
+    }
 }

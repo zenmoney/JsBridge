@@ -10,6 +10,9 @@ actual sealed interface JsFunction : JsObject {
         thiz: JsValue,
         args: List<JsValue>,
     ): JsValue
+
+    @Throws(JsException::class)
+    actual fun applyAsConstructor(args: List<JsValue>): JsValue
 }
 
 private fun <T> V8Array.map(action: (Any?) -> T): List<T> {
@@ -23,7 +26,7 @@ private fun <T> V8Array.map(action: (Any?) -> T): List<T> {
 
 actual fun JsFunction(
     context: JsContext,
-    value: JsObject.(args: List<JsValue>) -> JsValue,
+    value: JsValue.(args: List<JsValue>) -> JsValue,
 ): JsFunction =
     JsFunctionImpl(
         context,
@@ -31,7 +34,7 @@ actual fun JsFunction(
             (
                 try {
                     value(
-                        JsValue(context, thiz.twin()) as JsObject,
+                        JsValue(context, thiz.twin()),
                         args?.map { JsValue(context, it) } ?: emptyList(),
                     )
                 } catch (e: Exception) {
@@ -55,8 +58,18 @@ internal class JsFunctionImpl(
     val v8Function: V8Function
         get() = v8Value as V8Function
 
+    @Throws(JsException::class)
     override fun apply(
         thiz: JsValue,
         args: List<JsValue>,
     ): JsValue = context.callFunction(this, thiz, args)
+
+    @Throws(JsException::class)
+    override fun applyAsConstructor(args: List<JsValue>): JsValue =
+        context.callFunctionAsConstructor(
+            ArrayList<JsValue>(args.size + 1).apply {
+                add(this@JsFunctionImpl)
+                addAll(args)
+            },
+        )
 }

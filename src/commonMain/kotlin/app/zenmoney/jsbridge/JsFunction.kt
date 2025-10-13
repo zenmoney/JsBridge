@@ -6,14 +6,22 @@ expect sealed interface JsFunction : JsObject {
         thiz: JsValue,
         args: List<JsValue>,
     ): JsValue
+
+    @Throws(JsException::class)
+    fun applyAsConstructor(args: List<JsValue>): JsValue
 }
 
 expect fun JsFunction(
     context: JsContext,
-    value: JsObject.(args: List<JsValue>) -> JsValue,
+    value: JsValue.(args: List<JsValue>) -> JsValue,
 ): JsFunction
 
 operator fun JsFunction.invoke(
     args: List<JsValue> = emptyList(),
+    thiz: JsValue = context.globalObject,
+): JsValue = apply(thiz, args)
+
+operator fun JsFunction.invoke(
+    vararg args: JsValue,
     thiz: JsValue = context.globalObject,
 ): JsValue = apply(thiz, args.toList())

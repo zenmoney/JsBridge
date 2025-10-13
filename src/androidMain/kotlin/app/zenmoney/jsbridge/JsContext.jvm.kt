@@ -26,6 +26,15 @@ actual class JsContext : AutoCloseable {
 
     actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
 
+    internal val callFunctionAsConstructor: JsFunction =
+        evaluateScript(
+            """
+            function appZenmoneyCallFunctionAsConstructor(f, ...args) {
+                return new f(...args);
+            };
+            appZenmoneyCallFunctionAsConstructor;
+            """.trimIndent(),
+        ) as JsFunction
     internal val createBooleanObject: JsFunction =
         evaluateScript(
             """

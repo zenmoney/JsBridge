@@ -4,6 +4,7 @@ import com.caoccao.javet.interop.callback.IJavetDirectCallable
 import com.caoccao.javet.interop.callback.JavetCallbackContext
 import com.caoccao.javet.interop.callback.JavetCallbackType
 import com.caoccao.javet.values.reference.V8ValueFunction
+import kotlin.Throws
 
 actual sealed interface JsFunction : JsObject {
     @Throws(JsException::class)
@@ -11,11 +12,14 @@ actual sealed interface JsFunction : JsObject {
         thiz: JsValue,
         args: List<JsValue>,
     ): JsValue
+
+    @Throws(JsException::class)
+    actual fun applyAsConstructor(args: List<JsValue>): JsValue
 }
 
 actual fun JsFunction(
     context: JsContext,
-    value: JsObject.(args: List<JsValue>) -> JsValue,
+    value: JsValue.(args: List<JsValue>) -> JsValue,
 ): JsFunction {
     val name = "f$value${value.hashCode()}".filter { it.isLetterOrDigit() }
     val callbackContext =
@@ -26,7 +30,7 @@ actual fun JsFunction(
                 (
                     try {
                         value(
-                            JsValue(context, thiz.toClone()) as JsObject,
+                            JsValue(context, thiz.toClone()),
                             args?.map { arg -> JsValue(context, arg.toClone()) } ?: emptyList(),
                         )
                     } catch (e: Exception) {
@@ -52,8 +56,18 @@ internal class JsFunctionImpl(
     val v8Function: V8ValueFunction
         get() = v8Value as V8ValueFunction
 
+    @Throws(JsException::class)
     override fun apply(
         thiz: JsValue,
         args: List<JsValue>,
     ): JsValue = context.callFunction(this, thiz, args)
+
+    @Throws(JsException::class)
+    override fun applyAsConstructor(args: List<JsValue>): JsValue =
+        context.callFunctionAsConstructor(
+            ArrayList<JsValue>(args.size + 1).apply {
+                add(this@JsFunctionImpl)
+                addAll(args)
+            },
+        )
 }

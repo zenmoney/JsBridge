@@ -45,6 +45,26 @@ actual class JsContext : AutoCloseable {
             appZenmoneyCallFunction;
             """.trimIndent(),
         )!!
+    internal val jsWrapFunction =
+        jsContext.evaluateScript(
+            """
+            function appZenmoneyWrapFunction(f) {
+                return new Proxy(f, {
+                    apply(target, thisArg, args) {
+                        return target.apply(thisArg, args);
+                    },
+                    construct(target, args, newTarget) {
+                        const obj = Object.create(target.prototype);
+                        const result = target.apply(obj, args);
+                        return (result !== null && (typeof result === "object" || typeof result === "function"))
+                            ? result
+                            : obj;
+                    }
+                });
+            };
+            appZenmoneyWrapFunction;
+            """.trimIndent(),
+        )!!
 
     actual val globalObject: JsObject = JsObjectImpl(this, jsContext.globalObject!!)
     actual val NULL: JsValue = JsValueImpl(this, JSValue.valueWithNullInContext(jsContext)!!)
@@ -110,6 +130,16 @@ actual class JsContext : AutoCloseable {
                     args.forEach { add((it as JsValueImpl).jsValue) }
                 },
             )
+        throwExceptionIfNeeded()
+        return JsValue(this, jsValue)
+    }
+
+    internal fun callFunctionAsConstructor(
+        f: JsFunctionImpl,
+        args: List<JsValue>,
+    ): JsValue {
+        val jsValue =
+            f.jsValue.constructWithArguments(args.map { (it as JsValueImpl).jsValue })
         throwExceptionIfNeeded()
         return JsValue(this, jsValue)
     }
