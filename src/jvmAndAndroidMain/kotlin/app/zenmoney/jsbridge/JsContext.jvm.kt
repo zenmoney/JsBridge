@@ -3,12 +3,15 @@ package app.zenmoney.jsbridge
 import com.caoccao.javet.interop.V8Host
 import com.caoccao.javet.interop.V8Runtime
 import com.caoccao.javet.values.V8Value
+import java.lang.ref.ReferenceQueue
+import java.lang.ref.WeakReference
 
 actual class JsContext : AutoCloseable {
     private var lastException: Throwable? = null
 
     internal val v8Runtime: V8Runtime = V8Host.getV8Instance().createV8Runtime()
     private val v8Values = hashSetOf<V8Value>()
+    private val refQueue = ReferenceQueue<JsValueImpl>()
 
     private var callFunction: JsFunction? = null
 
@@ -69,7 +72,7 @@ actual class JsContext : AutoCloseable {
                 throw JsException(e.message ?: e.toString(), e, emptyMap())
             }
         throwExceptionIfNeeded {
-            v8Value.close()
+            v8Value.closeQuietly()
         }
         return JsValue(this, v8Value)
     }
@@ -112,7 +115,7 @@ actual class JsContext : AutoCloseable {
                 },
             )
         throwExceptionIfNeeded {
-            v8Value.close()
+            v8Value.closeQuietly()
         }
         return JsValue(this, v8Value)
     }
@@ -162,12 +165,25 @@ actual class JsContext : AutoCloseable {
 
     internal fun registerValue(value: JsValueImpl) {
         v8Values.add(value.v8Value)
+        JsValueRef(value, refQueue)
+        closeDeallocatedValues()
     }
 
     internal fun closeValue(value: JsValueImpl) {
         if (value.v8Value !== (globalObject as JsValueImpl).v8Value) {
-            value.v8Value.close()
-            v8Values.remove(value.v8Value)
+            val v8Value = value.v8Value
+            v8Values.remove(v8Value)
+            v8Value.closeQuietly()
+        }
+        closeDeallocatedValues()
+    }
+
+    private fun closeDeallocatedValues() {
+        while (true) {
+            val ref = refQueue.poll() ?: break
+            val v8Value = (ref as JsValueRef).v8Value
+            v8Values.remove(v8Value)
+            v8Value.closeQuietly()
         }
     }
 
@@ -179,10 +195,24 @@ actual class JsContext : AutoCloseable {
     }
 
     actual override fun close() {
-        v8Values.forEach { it.close() }
+        v8Values.forEach { it.closeQuietly() }
         v8Values.clear()
         callbackContextHandles.forEach { v8Runtime.removeCallbackContext(it) }
         callbackContextIndex = 0
         v8Runtime.close()
     }
+}
+
+internal fun V8Value.closeQuietly() {
+    try {
+        close()
+    } catch (_: Exception) {
+    }
+}
+
+private class JsValueRef(
+    value: JsValueImpl,
+    queue: ReferenceQueue<JsValueImpl>,
+) : WeakReference<JsValueImpl>(value, queue) {
+    val v8Value = value.v8Value
 }

@@ -45,7 +45,7 @@ internal class JsBooleanObjectImpl(
     private val value: Boolean =
         run {
             val v8PrimitiveValue = v8Value.valueOf()
-            v8PrimitiveValue.value.also { v8PrimitiveValue.close() }
+            v8PrimitiveValue.value.also { v8PrimitiveValue.closeQuietly() }
         }
 
     override fun hashCode(): Int = value.hashCode()

@@ -62,7 +62,7 @@ internal fun JsValue(
             value !== (context.globalObject as JsValueImpl).v8Value &&
             value.strictEquals((context.globalObject as JsValueImpl).v8Value)
         ) {
-            value.close()
+            value.closeQuietly()
             return context.globalObject
         }
     }

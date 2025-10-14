@@ -42,7 +42,7 @@ internal fun JsValue(
             val cachedV8Value = (it as JsValueImpl).v8Value
             if (cachedV8Value == value) {
                 if (value !== cachedV8Value) {
-                    value.close()
+                    value.closeQuietly()
                 }
                 return it
             }
@@ -63,7 +63,7 @@ internal fun JsValue(
                     0,
                     value.size,
                 ),
-            ).also { buffer.close() }
+            ).also { buffer.closeQuietly() }
         }
         is V8TypedArray ->
             if (value.type == V8TypedArray.UNSIGNED_INT_8_ARRAY) {

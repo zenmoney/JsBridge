@@ -3,6 +3,8 @@ package app.zenmoney.jsbridge
 import com.eclipsesource.v8.V8
 import com.eclipsesource.v8.V8Function
 import com.eclipsesource.v8.V8Value
+import java.lang.ref.ReferenceQueue
+import java.lang.ref.WeakReference
 import java.util.Collections
 import java.util.IdentityHashMap
 
@@ -12,6 +14,7 @@ actual class JsContext : AutoCloseable {
 
     internal val v8Runtime: V8 = V8.createV8Runtime()
     private val v8Values: MutableSet<V8Value> = Collections.newSetFromMap(IdentityHashMap())
+    private val refQueue = ReferenceQueue<JsValueImpl>()
 
     actual val globalObject: JsObject = JsObjectImpl(this, v8Runtime.executeObjectScript("this")).also { registerValue(it) }
     actual val NULL: JsValue = JsValueImpl(this, null)
@@ -133,7 +136,7 @@ actual class JsContext : AutoCloseable {
             }
         throwExceptionIfNeeded {
             if (v8Value is V8Value) {
-                v8Value.close()
+                v8Value.closeQuietly()
             }
         }
         return JsValue(this, v8Value)
@@ -182,7 +185,7 @@ actual class JsContext : AutoCloseable {
         fullArgs.close()
         throwExceptionIfNeeded {
             if (v8Value is V8Value) {
-                v8Value.close()
+                v8Value.closeQuietly()
             }
         }
         return JsValue(this, v8Value)
@@ -239,20 +242,48 @@ actual class JsContext : AutoCloseable {
     internal fun registerValue(value: JsValueImpl) {
         if (value.v8Value is V8Value) {
             v8Values.add(value.v8Value)
+            JsValueRef(value, refQueue)
         }
+        closeDeallocatedValues()
     }
 
     internal fun closeValue(value: JsValueImpl) {
-        if (value.v8Value is V8Value && value !in cachedValues) {
-            value.v8Value.close()
+        if (value.v8Value is V8Value && !cachedValues.any { it === value }) {
+            val v8Value = value.v8Value
+            v8Values.remove(v8Value)
+            v8Value.closeQuietly()
+        }
+        closeDeallocatedValues()
+    }
+
+    private fun closeDeallocatedValues() {
+        while (true) {
+            val ref = refQueue.poll() ?: break
+            val v8Value = (ref as JsValueRef).v8Value ?: continue
+            v8Values.remove(v8Value)
+            v8Value.closeQuietly()
         }
     }
 
     actual override fun close() {
-        v8Values.forEach { it.close() }
+        v8Values.forEach { it.closeQuietly() }
         v8Values.clear()
-        jsGetTime.close()
-        jsTypeOf.close()
+        jsGetTime.closeQuietly()
+        jsTypeOf.closeQuietly()
         v8Runtime.close()
     }
+}
+
+internal fun V8Value.closeQuietly() {
+    try {
+        close()
+    } catch (_: Exception) {
+    }
+}
+
+private class JsValueRef(
+    value: JsValueImpl,
+    queue: ReferenceQueue<JsValueImpl>,
+) : WeakReference<JsValueImpl>(value, queue) {
+    val v8Value: V8Value? = value.v8Value as? V8Value
 }

@@ -596,4 +596,11 @@ class JsContextTest {
         assertEquals(JsBoolean(context, true), context.evaluateScript("error instanceof Error"))
         assertEquals(JsString(context, "my message"), context.evaluateScript("error.message"))
     }
+
+    @Test
+    fun doesNotThrowOnRepeatingValueClose() {
+        val a = JsObject(context)
+        a.close()
+        a.close()
+    }
 }

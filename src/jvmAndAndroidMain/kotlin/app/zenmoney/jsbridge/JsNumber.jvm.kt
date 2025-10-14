@@ -58,7 +58,7 @@ internal class JsNumberObjectImpl :
         run {
             @Suppress("UNCHECKED_CAST")
             val v8PrimitiveValue = (v8Value as IV8ValuePrimitiveObject<V8ValueNumber<*>>).valueOf()
-            (v8PrimitiveValue.value.also { v8PrimitiveValue.close() } as Number).toDouble()
+            (v8PrimitiveValue.value.also { v8PrimitiveValue.closeQuietly() } as Number).toDouble()
         }
 
     constructor(
