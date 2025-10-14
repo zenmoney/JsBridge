@@ -5,7 +5,7 @@ import platform.JavaScriptCore.JSValue
 import platform.JavaScriptCore.objectForKeyedSubscript
 
 actual class JsContext : AutoCloseable {
-    private var lastException: Exception? = null
+    private var lastException: Throwable? = null
 
     internal val jsContext = JSContext()
     internal val jsDate = jsContext.evaluateScript("Date")!!
@@ -60,17 +60,20 @@ actual class JsContext : AutoCloseable {
         val e = jsContext.exception
         if (e != null) {
             jsContext.exception = null
-            throw JsException(
-                e.toString_() ?: e.toString(),
-                lastException?.takeIf { e.isObject && e.objectForKeyedSubscript("appZenmoneyException")?.toInt32() == it.hashCode() },
-                (if (e.isObject) e.toDictionary()?.mapKeys { it.key.toString() } else null) ?: emptyMap(),
-            ).also {
-                lastException = null
-            }
+            throw createJsException(e)
         }
     }
 
-    internal fun throwExceptionToJs(e: Exception) {
+    internal fun createJsException(e: JSValue): JsException =
+        JsException(
+            e.toString_() ?: e.toString(),
+            lastException
+                ?.takeIf { e.isObject && e.objectForKeyedSubscript("appZenmoneyException")?.toInt32() == it.hashCode() }
+                ?.also { lastException = null },
+            (if (e.isObject) e.toDictionary()?.mapKeys { it.key.toString() } else null) ?: emptyMap(),
+        )
+
+    internal fun createJsError(e: Throwable): JSValue {
         lastException = e
         val message = e.message?.ifBlank { null }?.replace("\"", "\\\"")
         val jsError = jsContext.evaluateScript("new Error(${if (message == null) "" else "\"${message}\""})")!!
@@ -84,7 +87,11 @@ actual class JsContext : AutoCloseable {
                 ),
             ),
         )
-        jsContext.exception = jsError
+        return jsError
+    }
+
+    internal fun throwExceptionToJs(e: Throwable) {
+        jsContext.exception = createJsError(e)
     }
 
     internal fun callFunction(

@@ -7,7 +7,7 @@ import java.util.Collections
 import java.util.IdentityHashMap
 
 actual class JsContext : AutoCloseable {
-    private var lastException: Exception? = null
+    private var lastException: Throwable? = null
     private var callFunction: JsFunction? = null
 
     internal val v8Runtime: V8 = V8.createV8Runtime()
@@ -177,21 +177,7 @@ actual class JsContext : AutoCloseable {
         val hasError = arr[1]
         if (hasError is JsBoolean && hasError.toBoolean()) {
             val error = arr[0]
-            val message =
-                if (error is JsString) {
-                    "Error: $error"
-                } else {
-                    error.toString()
-                }
-            val e =
-                JsException(
-                    message,
-                    lastException?.takeIf {
-                        "Error: ${it.message}" == message || message == "Error: Unhandled Java Exception"
-                    },
-                    (if (error is JsObject) error.toPlainMap() else null) ?: emptyMap(),
-                )
-            lastException = null
+            val e = createJsException(error)
             hasError.close()
             error.close()
             arr.close()
@@ -202,7 +188,30 @@ actual class JsContext : AutoCloseable {
         arr.close()
     }
 
-    internal fun throwExceptionToJs(e: Exception): Nothing {
+    internal fun createJsException(e: JsValue): JsException {
+        val message =
+            if (e is JsString) {
+                "Error: $e"
+            } else {
+                e.toString()
+            }
+        return JsException(
+            message,
+            lastException
+                ?.takeIf {
+                    "Error: ${it.message}" == message || message == "Error: Unhandled Java Exception"
+                }?.also { lastException = null },
+            (if (e is JsObject) e.toPlainMap() else null) ?: emptyMap(),
+        )
+    }
+
+    internal fun createJsError(e: Throwable): JsObject {
+        lastException = e
+        val message = e.message?.ifBlank { null }?.replace("\"", "\\\"")
+        return evaluateScript("new Error(${if (message == null) "" else "\"${message}\""})") as JsObject
+    }
+
+    internal fun throwExceptionToJs(e: Throwable): Nothing {
         lastException = e
         throw e
     }

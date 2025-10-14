@@ -5,7 +5,7 @@ import com.caoccao.javet.interop.V8Runtime
 import com.caoccao.javet.values.V8Value
 
 actual class JsContext : AutoCloseable {
-    private var lastException: Exception? = null
+    private var lastException: Throwable? = null
 
     internal val v8Runtime: V8Runtime = V8Host.getV8Instance().createV8Runtime()
     private val v8Values = hashSetOf<V8Value>()
@@ -98,16 +98,7 @@ actual class JsContext : AutoCloseable {
         val hasError = arr[1]
         if (hasError is JsBoolean && hasError.toBoolean()) {
             val error = arr[0]
-            val message = error.toString()
-            val e =
-                JsException(
-                    message,
-                    lastException?.takeIf {
-                        "Error: ${it.message}" == message || message == "Error: Uncaught JavaError in function callback"
-                    },
-                    (if (error is JsObject) error.toPlainMap() else null) ?: emptyMap(),
-                )
-            lastException = null
+            val e = createJsException(error)
             hasError.close()
             error.close()
             arr.close()
@@ -118,7 +109,25 @@ actual class JsContext : AutoCloseable {
         arr.close()
     }
 
-    internal fun throwExceptionToJs(e: Exception): Nothing {
+    internal fun createJsException(e: JsValue): JsException {
+        val message = e.toString()
+        return JsException(
+            message,
+            lastException
+                ?.takeIf {
+                    "Error: ${it.message}" == message || message == "Error: Uncaught JavaError in function callback"
+                }?.also { lastException = null },
+            (if (e is JsObject) e.toPlainMap() else null) ?: emptyMap(),
+        )
+    }
+
+    internal fun createJsError(e: Throwable): JsObject {
+        lastException = e
+        val message = e.message?.ifBlank { null }?.replace("\"", "\\\"")
+        return evaluateScript("new Error(${if (message == null) "" else "\"${message}\""})") as JsObject
+    }
+
+    internal fun throwExceptionToJs(e: Throwable): Nothing {
         lastException = e
         throw e
     }

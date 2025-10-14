@@ -457,4 +457,25 @@ class JsContextTest {
         b.close()
         a.close()
     }
+
+    @Test
+    fun returnsJsErrorObjectAndConvertsItToJsExceptionWithNativeExceptionCause() {
+        var exception: Exception? = null
+        val f =
+            JsFunction(context) { args ->
+                exception = RuntimeException("my error message")
+                exception.toJsObject(context)
+            }
+        context.globalObject["f"] = f
+        val error = context.evaluateScript("var error = f(1, 2); error")
+        assertIs<JsObject>(error)
+        assertEquals(JsBoolean(context, true), context.evaluateScript("error instanceof Error"))
+        val e = error.toJsException()
+        assertEquals("Error: my error message", e.message)
+        assertEquals(exception, e.cause)
+        assertEquals(
+            emptyMap(),
+            e.data,
+        )
+    }
 }
