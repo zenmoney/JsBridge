@@ -1,6 +1,8 @@
 package app.zenmoney.jsbridge
 
+import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -8,11 +10,26 @@ expect sealed interface JsValue : AutoCloseable {
     val context: JsContext
 }
 
+internal expect val JsValue.core: JsValueCore
+
+internal class JsValueCore(
+    context: JsContext,
+) : JsScopedValue() {
+    @Suppress("PropertyName")
+    internal var _context: JsContext? = context
+    val context: JsContext
+        get() = _context ?: throw JsException("JsValue is already closed")
+
+    fun close(value: JsValue) {
+        _context?.closeValue(value)
+        _context = null
+    }
+}
+
 fun JsValue.toJson(): String =
-    context.evaluateScript("JSON.stringify").use { stringify ->
-        (stringify as JsFunction).apply(context.globalObject, listOf(this)).use {
-            it.toString()
-        }
+    jsScope(context) {
+        val stringify = eval("JSON.stringify") as JsFunction
+        stringify(this@toJson).toString()
     }
 
 fun JsValue.toPlainValue(): Any? = context.getPlainValueOf(this)
@@ -37,37 +54,33 @@ suspend fun JsValue.await(): JsValue {
     if (this !is JsObject) {
         return this
     }
-    return get("then").use { then ->
-        if (then !is JsFunction) {
-            return this
+    return jsScope(context) {
+        val thiz = this@await
+        val then = (get("then") as? JsFunction)?.escape() ?: return@jsScope thiz
+        coroutineContext.job.invokeOnCompletion {
+            then.close()
         }
-        suspendCancellableCoroutine { cont ->
-            then.apply(
-                thiz = this,
-                args =
-                    listOf(
-                        JsFunction(context) { args ->
-                            this.close()
-                            args.forEachIndexed { index, it -> if (index != 0) it.close() }
-                            cont.resume(args.firstOrNull() ?: context.UNDEFINED)
-                            this.context.UNDEFINED
-                        },
-                        JsFunction(context) { args ->
-                            this.close()
-                            args.forEachIndexed { index, it -> if (index != 0) it.close() }
-                            val exception =
-                                args.firstOrNull().use { error ->
-                                    JsException(
-                                        message = error?.toString() ?: "Unknown error",
-                                        cause = null,
-                                        data = (error as? JsObject)?.toPlainMap() ?: emptyMap(),
-                                    )
-                                }
-                            cont.resumeWithException(exception)
-                            this.context.UNDEFINED
-                        },
-                    ),
-            )
+        suspendCancellableCoroutine<JsValue> { cont ->
+            jsScope(context) {
+                then.autoClose()(
+                    JsFunction { args, _ ->
+                        cont.resume(args.firstOrNull()?.escape() ?: context.UNDEFINED)
+                        context.UNDEFINED
+                    },
+                    JsFunction { args, _ ->
+                        val exception =
+                            args.firstOrNull()?.let { JsException(it) }
+                                ?: JsException(
+                                    message = "Promise rejected with no error",
+                                    cause = null,
+                                    data = emptyMap(),
+                                )
+                        cont.resumeWithException(exception)
+                        context.UNDEFINED
+                    },
+                    thiz = thiz,
+                ).escape()
+            }
         }
     }
 }

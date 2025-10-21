@@ -8,15 +8,15 @@ actual sealed interface JsStringObject :
     JsObject,
     JsString
 
-actual fun JsString(
+internal actual fun JsString(
     context: JsContext,
     value: String,
 ): JsString = JsValue(context, value) as JsString
 
-actual fun JsStringObject(
+internal actual fun JsStringObject(
     context: JsContext,
     value: String,
-): JsStringObject = context.createStringObject.apply(context.globalObject, listOf(JsString(context, value))) as JsStringObject
+): JsStringObject = context.createStringObject.apply(context.globalThis, listOf(JsString(context, value))) as JsStringObject
 
 internal class JsStringImpl(
     context: JsContext,

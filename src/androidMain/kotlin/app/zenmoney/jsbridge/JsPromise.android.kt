@@ -1,6 +1,6 @@
 package app.zenmoney.jsbridge
 
-import com.caoccao.javet.values.reference.V8ValueObject
+import com.eclipsesource.v8.V8Object
 
 actual sealed interface JsPromise : JsObject
 
@@ -24,6 +24,6 @@ internal actual fun JsPromise(
 
 internal open class JsPromiseImpl(
     context: JsContext,
-    v8Object: V8ValueObject,
+    v8Object: V8Object,
 ) : JsObjectImpl(context, v8Object),
     JsPromise

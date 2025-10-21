@@ -6,11 +6,20 @@ actual sealed interface JsValue : AutoCloseable {
     actual val context: JsContext
 }
 
+internal actual val JsValue.core: JsValueCore
+    get() = (this as JsValueImpl)._core
+
 internal open class JsValueImpl(
-    final override val context: JsContext,
+    context: JsContext,
     val jsValue: JSValue,
 ) : JsValue {
+    @Suppress("PropertyName")
+    internal val _core = JsValueCore(context)
+    override val context: JsContext
+        get() = _core.context
+
     override fun close() {
+        _core.close(this)
     }
 
     override fun toString(): String = jsValue.toString_() ?: jsValue.toString()
@@ -28,8 +37,8 @@ internal fun JsValue(
         if (value.context != context.jsContext) {
             throw IllegalArgumentException("value runtime must match the JsContext runtime")
         }
-        if (value.isEqualToObject((context.globalObject as JsValueImpl).jsValue)) {
-            return context.globalObject
+        if (value.isEqualToObject((context.globalThis as JsValueImpl).jsValue)) {
+            return context.globalThis
         }
     }
     return when (value) {
@@ -64,5 +73,5 @@ internal fun JsValue(
                 }
             }
         else -> TODO()
-    }
+    }.also { context.registerValue(it) }
 }

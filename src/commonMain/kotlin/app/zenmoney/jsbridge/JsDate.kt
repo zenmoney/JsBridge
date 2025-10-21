@@ -4,7 +4,9 @@ expect sealed interface JsDate : JsObject {
     fun toMillis(): Long
 }
 
-expect fun JsDate(
+internal expect fun JsDate(
     context: JsContext,
     millis: Long,
 ): JsDate
+
+fun JsScope.JsDate(millis: Long): JsDate = JsDate(context, millis).autoClose()

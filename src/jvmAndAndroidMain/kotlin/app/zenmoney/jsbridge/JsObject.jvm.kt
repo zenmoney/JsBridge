@@ -3,15 +3,15 @@ package app.zenmoney.jsbridge
 import com.caoccao.javet.values.reference.V8ValueObject
 
 actual sealed interface JsObject : JsValue {
-    actual operator fun get(key: String): JsValue
-
     actual operator fun set(
         key: String,
         value: JsValue?,
     )
 }
 
-actual fun JsObject(context: JsContext): JsObject =
+internal actual fun JsObject.getValue(key: String): JsValue = JsValue(context, (this as JsObjectImpl).v8Object.get(key))
+
+internal actual fun JsObject(context: JsContext): JsObject =
     JsObjectImpl(context, context.v8Runtime.createV8ValueObject()).also {
         context.registerValue(it)
     }
@@ -27,8 +27,6 @@ internal open class JsObjectImpl(
         get() = v8Value as V8ValueObject
 
     override fun hashCode(): Int = hashCode
-
-    override fun get(key: String): JsValue = JsValue(context, v8Object.get(key))
 
     override fun set(
         key: String,

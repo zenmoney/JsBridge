@@ -1,27 +1,19 @@
 package app.zenmoney.jsbridge
 
-expect sealed interface JsFunction : JsObject {
-    @Throws(JsException::class)
-    fun apply(
-        thiz: JsValue,
-        args: List<JsValue>,
-    ): JsValue
+expect sealed interface JsFunction : JsObject
 
-    @Throws(JsException::class)
-    fun applyAsConstructor(args: List<JsValue>): JsValue
-}
+@Throws(JsException::class)
+internal expect fun JsFunction.apply(
+    thiz: JsValue,
+    args: List<JsValue>,
+): JsValue
 
-expect fun JsFunction(
+@Throws(JsException::class)
+internal expect fun JsFunction.applyAsConstructor(args: List<JsValue>): JsValue
+
+internal expect fun JsFunction(
     context: JsContext,
-    value: JsValue.(args: List<JsValue>) -> JsValue,
+    value: JsScope.(args: List<JsValue>, thiz: JsValue) -> JsValue,
 ): JsFunction
 
-operator fun JsFunction.invoke(
-    args: List<JsValue> = emptyList(),
-    thiz: JsValue = context.globalObject,
-): JsValue = apply(thiz, args)
-
-operator fun JsFunction.invoke(
-    vararg args: JsValue,
-    thiz: JsValue = context.globalObject,
-): JsValue = apply(thiz, args.toList())
+fun JsScope.JsFunction(value: JsScope.(args: List<JsValue>, thiz: JsValue) -> JsValue): JsFunction = JsFunction(context, value).autoClose()

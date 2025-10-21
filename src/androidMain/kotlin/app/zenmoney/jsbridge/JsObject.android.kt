@@ -4,15 +4,18 @@ import com.eclipsesource.v8.V8Object
 import com.eclipsesource.v8.V8Value
 
 actual sealed interface JsObject : JsValue {
-    actual operator fun get(key: String): JsValue
-
     actual operator fun set(
         key: String,
         value: JsValue?,
     )
 }
 
-actual fun JsObject(context: JsContext): JsObject = JsObjectImpl(context, V8Object(context.v8Runtime)).also { context.registerValue(it) }
+internal actual fun JsObject.getValue(key: String): JsValue = JsValue(context, (this as JsObjectImpl).v8Object.get(key))
+
+internal actual fun JsObject(context: JsContext): JsObject =
+    JsObjectImpl(context, V8Object(context.v8Runtime)).also {
+        context.registerValue(it)
+    }
 
 internal open class JsObjectImpl(
     context: JsContext,
@@ -21,8 +24,6 @@ internal open class JsObjectImpl(
     JsObject {
     val v8Object: V8Object
         get() = v8Value as V8Object
-
-    override fun get(key: String): JsValue = JsValue(context, v8Object.get(key))
 
     override fun set(
         key: String,

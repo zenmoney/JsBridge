@@ -20,66 +20,72 @@ class JsEventLoop(
     private var i = 0
     private val timeoutJobs = mutableIntObjectMapOf<Job>()
     private val intervalJobs = mutableIntObjectMapOf<Job>()
-    private val nextTickCallbacks = mutableObjectListOf<() -> Unit>()
-    private var immediateCallbacks = mutableIntObjectMapOf<() -> Unit>()
+    private val nextTickCallbacks = mutableObjectListOf<Pair<JsFunction, List<JsValue>>>()
+    private var immediateCallbacks = mutableIntObjectMapOf<Pair<JsFunction, List<JsValue>>>()
 
-    fun attachTo(context: JsContext) {
-        context.globalObject["process"]
-            .let {
-                when (it) {
-                    context.NULL,
-                    context.UNDEFINED,
-                    -> JsObject(context).also { process -> context.globalObject["process"] = process }
-                    is JsObject -> it
-                    else -> {
-                        it.close()
-                        null
+    fun attachTo(context: JsContext) =
+        jsScope(context) {
+            context.globalThis["process"]
+                .autoClose()
+                .let {
+                    when (it) {
+                        context.NULL,
+                        context.UNDEFINED,
+                        -> JsObject().also { process -> context.globalThis["process"] = process }
+                        is JsObject -> it
+                        else -> null
                     }
+                }?.let { process ->
+                    process["nextTick"] =
+                        JsFunction { args, _ ->
+                            nextTick(args)
+                            context.UNDEFINED
+                        }
                 }
-            }?.use { process ->
-                process["nextTick"] =
-                    JsFunctionClosedOnException(context) {
-                        nextTick(it)
-                        context.UNDEFINED
-                    }
-            }
-        context.globalObject["clearImmediate"] =
-            JsFunctionClosedOnException(context) {
-                clearImmediate(it)
-                context.UNDEFINED
-            }
-        context.globalObject["clearInterval"] =
-            JsFunctionClosedOnException(context) {
-                clearInterval(it)
-                context.UNDEFINED
-            }
-        context.globalObject["clearTimeout"] =
-            JsFunctionClosedOnException(context) {
-                clearTimeout(it)
-                context.UNDEFINED
-            }
-        context.globalObject["setImmediate"] = JsFunctionClosedOnException(context) { setImmediate(it) }
-        context.globalObject["setInterval"] = JsFunctionClosedOnException(context) { setInterval(it) }
-        context.globalObject["setTimeout"] = JsFunctionClosedOnException(context) { setTimeout(it) }
-    }
+            context.globalThis["clearImmediate"] =
+                JsFunction { args, _ ->
+                    clearImmediate(args)
+                    context.UNDEFINED
+                }
+            context.globalThis["clearInterval"] =
+                JsFunction { args, _ ->
+                    clearInterval(args)
+                    context.UNDEFINED
+                }
+            context.globalThis["clearTimeout"] =
+                JsFunction { args, _ ->
+                    clearTimeout(args)
+                    context.UNDEFINED
+                }
+            context.globalThis["setImmediate"] = JsFunction { args, _ -> setImmediate(args) }
+            context.globalThis["setInterval"] = JsFunction { args, _ -> setInterval(args) }
+            context.globalThis["setTimeout"] = JsFunction { args, _ -> setTimeout(args) }
+        }
 
     fun tick() {
         var i = 0
         while (i < nextTickCallbacks.size) {
-            if (!job.isActive) {
-                return
+            val (callback, args) = nextTickCallbacks[i]
+            jsScope(callback.context) {
+                autoClose(callback)
+                autoClose(args)
+                if (job.isActive) {
+                    callback(args)
+                }
             }
-            nextTickCallbacks[i]()
             i++
         }
         nextTickCallbacks.clear()
         val callbacks = immediateCallbacks
         immediateCallbacks = mutableIntObjectMapOf()
-        callbacks.forEachValue {
-            if (!job.isActive) {
-                return
+        callbacks.forEachValue { (callback, args) ->
+            jsScope(callback.context) {
+                autoClose(callback)
+                autoClose(args)
+                if (job.isActive) {
+                    callback(args)
+                }
             }
-            it()
         }
     }
 
@@ -92,50 +98,46 @@ class JsEventLoop(
         job.join()
     }
 
-    fun Deferred<JsValue>.toJsPromise(context: JsContext): JsPromise {
+    fun JsScope.JsPromise(deferred: Deferred<JsValue>): JsPromise {
         lateinit var resolve: JsFunction
         lateinit var reject: JsFunction
         val promise =
-            JsPromise(context) { res, rej ->
-                resolve = res
-                reject = rej
+            JsPromise { res, rej ->
+                resolve = res.escape()
+                reject = rej.escape()
             }
+        val context = context
         launch {
-            val value =
-                try {
-                    this@toJsPromise.await()
-                } catch (e: CancellationException) {
-                    resolve.close()
-                    reject.close()
-                    throw e
-                } catch (e: Exception) {
-                    val error = e.toJsObject(context)
-                    reject(error)
-                    resolve.close()
-                    reject.close()
-                    error.close()
-                    return@launch
-                }
-            resolve(value)
-            resolve.close()
-            reject.close()
-            value.close()
+            jsScope(context) {
+                autoClose(resolve)
+                autoClose(reject)
+                val value =
+                    try {
+                        deferred.await().autoClose()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        reject(JsObject(e))
+                        return@jsScope
+                    }
+                resolve(value)
+            }
         }
         return promise
     }
 
-    private fun nextTick(args: List<JsValue>) {
+    private fun JsScope.nextTick(args: List<JsValue>) {
         val callback = args.getOrNull(0)
         if (callback !is JsFunction) {
             throw IllegalArgumentException("The \"callback\" argument must be of type function.")
         }
         val args = args.subList(1, args.size)
-        nextTickCallbacks.add {
-            callback.invokeAndClose(args)
-        }
+        escape(callback)
+        escape(args)
+        nextTickCallbacks.add(Pair(callback, args))
     }
 
-    private fun setTimeout(args: List<JsValue>): JsNumber {
+    private fun JsScope.setTimeout(args: List<JsValue>): JsNumber {
         val callback = args.getOrNull(0)
         if (callback !is JsFunction) {
             throw IllegalArgumentException("The \"callback\" argument must be of type function.")
@@ -143,27 +145,34 @@ class JsEventLoop(
         val delayMs =
             (args.getOrNull(1) as? JsNumber)?.toNumber()?.toLong()
                 ?: throw IllegalArgumentException("The \"delay\" argument must be of type number.")
-        args[1].close()
         val args = args.subList(2, args.size)
         val id = i++
-        val context = callback.context
+        escape(callback)
+        escape(args)
         timeoutJobs[id] =
             launch {
                 delay(delayMs)
-                callback.invokeAndClose(args)
+                jsScope(callback.context) {
+                    autoClose(callback)
+                    autoClose(args)
+                    callback(args)
+                }
                 tick()
+            }.apply {
+                invokeOnCompletion { _ ->
+                    callback.close()
+                    args.forEach { it.close() }
+                }
             }
-        return JsNumber(context, id)
+        return JsNumber(id)
     }
 
     private fun clearTimeout(args: List<JsValue>) {
-        val id = (args.getOrNull(0) as? JsNumber)?.toNumber()?.toInt()
-        args.forEach { it.close() }
-        if (id == null) return
+        val id = (args.getOrNull(0) as? JsNumber)?.toNumber()?.toInt() ?: return
         timeoutJobs.remove(id)?.cancel()
     }
 
-    private fun setInterval(args: List<JsValue>): JsNumber {
+    private fun JsScope.setInterval(args: List<JsValue>): JsNumber {
         val callback = args.getOrNull(0)
         if (callback !is JsFunction) {
             throw IllegalArgumentException("The \"callback\" argument must be of type function.")
@@ -171,77 +180,53 @@ class JsEventLoop(
         val delayMs =
             (args.getOrNull(1) as? JsNumber)?.toNumber()?.toLong()
                 ?: throw IllegalArgumentException("The \"delay\" argument must be of type number.")
-        args[1].close()
         val args = args.subList(2, args.size)
         val id = i++
-        val context = callback.context
+        escape(callback)
+        escape(args)
         intervalJobs[id] =
             launch {
                 while (true) {
                     delay(delayMs)
-                    callback.invokeAndClose(args)
+                    jsScope(callback.context) {
+                        autoClose(callback)
+                        autoClose(args)
+                        callback(args)
+                    }
                     tick()
                 }
+            }.apply {
+                invokeOnCompletion { _ ->
+                    callback.close()
+                    args.forEach { it.close() }
+                }
             }
-        return JsNumber(context, id)
+        return JsNumber(id)
     }
 
     private fun clearInterval(args: List<JsValue>) {
-        val id = (args.getOrNull(0) as? JsNumber)?.toNumber()?.toInt()
-        args.forEach { it.close() }
-        if (id == null) return
+        val id = (args.getOrNull(0) as? JsNumber)?.toNumber()?.toInt() ?: return
         intervalJobs.remove(id)?.cancel()
     }
 
-    private fun setImmediate(args: List<JsValue>): JsNumber {
+    private fun JsScope.setImmediate(args: List<JsValue>): JsNumber {
         val callback = args.getOrNull(0)
         if (callback !is JsFunction) {
             throw IllegalArgumentException("The \"callback\" argument must be of type function.")
         }
         val args = args.subList(1, args.size)
         val id = i++
-        val context = callback.context
-        immediateCallbacks[i] = {
-            callback.invokeAndClose(args)
-        }
-        return JsNumber(context, id)
+        escape(callback)
+        escape(args)
+        immediateCallbacks[i] = Pair(callback, args)
+        return JsNumber(id)
     }
 
     private fun clearImmediate(args: List<JsValue>) {
-        val id = (args.getOrNull(0) as? JsNumber)?.toNumber()?.toInt()
-        args.forEach { it.close() }
-        if (id == null) return
-        immediateCallbacks.remove(id)
-    }
-}
-
-@Suppress("FunctionName")
-private fun JsFunctionClosedOnException(
-    context: JsContext,
-    value: (args: List<JsValue>) -> JsValue,
-): JsFunction =
-    JsFunction(context) { args ->
-        this.close()
-        try {
-            value(args)
-        } catch (e: Throwable) {
-            args.forEach {
-                try {
-                    it.close()
-                } catch (_: Throwable) {
-                }
-            }
-            throw e
+        val id = (args.getOrNull(0) as? JsNumber)?.toNumber()?.toInt() ?: return
+        immediateCallbacks.remove(id)?.also { (callback, args) ->
+            callback.close()
+            args.forEach { it.close() }
         }
     }
-
-private fun JsFunction.invokeAndClose(
-    args: List<JsValue> = emptyList(),
-    thiz: JsValue = context.globalObject,
-) = try {
-    apply(thiz, args).close()
-} finally {
-    thiz.close()
-    args.forEach { it.close() }
-    close()
 }

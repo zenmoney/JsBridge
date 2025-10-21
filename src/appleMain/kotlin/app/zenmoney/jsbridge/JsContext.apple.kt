@@ -5,6 +5,8 @@ import platform.JavaScriptCore.JSValue
 import platform.JavaScriptCore.objectForKeyedSubscript
 
 actual class JsContext : AutoCloseable {
+    internal actual val core = JsContextCore()
+
     private var lastException: Throwable? = null
 
     internal val jsContext = JSContext()
@@ -66,9 +68,9 @@ actual class JsContext : AutoCloseable {
             """.trimIndent(),
         )!!
 
-    actual val globalObject: JsObject = JsObjectImpl(this, jsContext.globalObject!!)
-    actual val NULL: JsValue = JsValueImpl(this, JSValue.valueWithNullInContext(jsContext)!!)
-    actual val UNDEFINED: JsValue = JsValueImpl(this, JSValue.valueWithUndefinedInContext(jsContext)!!)
+    actual val globalThis: JsObject = JsObjectImpl(this, jsContext.globalObject!!).also { registerValue(it) }
+    actual val NULL: JsValue = JsValueImpl(this, JSValue.valueWithNullInContext(jsContext)!!).also { registerValue(it) }
+    actual val UNDEFINED: JsValue = JsValueImpl(this, JSValue.valueWithUndefinedInContext(jsContext)!!).also { registerValue(it) }
 
     actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
 
@@ -144,6 +146,15 @@ actual class JsContext : AutoCloseable {
         return JsValue(this, jsValue)
     }
 
+    internal fun registerValue(value: JsValue) {
+        core.addValue(value)
+    }
+
+    internal actual fun closeValue(value: JsValue) {
+        core.removeValue(value)
+    }
+
     actual override fun close() {
+        core.close()
     }
 }

@@ -8,20 +8,14 @@ actual sealed interface JsDate : JsObject {
     actual fun toMillis(): Long
 }
 
-actual fun JsDate(
+internal actual fun JsDate(
     context: JsContext,
     millis: Long,
 ): JsDate = JsValue(context, context.v8Runtime.createV8ValueZonedDateTime(millis)) as JsDate
 
-fun JsDate(
-    context: JsContext,
-    date: Date,
-): JsDate = JsDate(context, date.time)
+fun JsScope.JsDate(date: Date): JsDate = JsDate(context, date.time).autoClose()
 
-fun JsDate(
-    context: JsContext,
-    date: ZonedDateTime,
-): JsDate = JsValue(context, context.v8Runtime.createV8ValueZonedDateTime(date)) as JsDate
+fun JsScope.JsDate(date: ZonedDateTime): JsDate = JsValue(context, context.v8Runtime.createV8ValueZonedDateTime(date)).autoClose() as JsDate
 
 internal class JsDateImpl(
     context: JsContext,
@@ -35,10 +29,6 @@ internal class JsDateImpl(
     override fun equals(other: Any?): Boolean = (other is JsDateImpl) && millis == other.millis
 
     override fun toMillis(): Long = millis
-
-    override fun get(key: String): JsValue {
-        TODO("Not yet implemented")
-    }
 
     override fun set(
         key: String,

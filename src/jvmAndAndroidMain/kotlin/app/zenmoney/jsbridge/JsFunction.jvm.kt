@@ -4,22 +4,29 @@ import com.caoccao.javet.interop.callback.IJavetDirectCallable
 import com.caoccao.javet.interop.callback.JavetCallbackContext
 import com.caoccao.javet.interop.callback.JavetCallbackType
 import com.caoccao.javet.values.reference.V8ValueFunction
-import kotlin.Throws
 
-actual sealed interface JsFunction : JsObject {
-    @Throws(JsException::class)
-    actual fun apply(
-        thiz: JsValue,
-        args: List<JsValue>,
-    ): JsValue
+actual sealed interface JsFunction : JsObject
 
-    @Throws(JsException::class)
-    actual fun applyAsConstructor(args: List<JsValue>): JsValue
-}
+@Throws(JsException::class)
+internal actual fun JsFunction.apply(
+    thiz: JsValue,
+    args: List<JsValue>,
+): JsValue = context.callFunction(this as JsFunctionImpl, thiz, args)
 
-actual fun JsFunction(
+@Throws(JsException::class)
+internal actual fun JsFunction.applyAsConstructor(args: List<JsValue>): JsValue =
+    context.callFunctionAsConstructor.apply(
+        args =
+            ArrayList<JsValue>(args.size + 1).apply {
+                add(this@applyAsConstructor)
+                addAll(args)
+            },
+        thiz = context.globalThis,
+    )
+
+internal actual fun JsFunction(
     context: JsContext,
-    value: JsValue.(args: List<JsValue>) -> JsValue,
+    value: JsScope.(args: List<JsValue>, thiz: JsValue) -> JsValue,
 ): JsFunction {
     val name = "f$value${value.hashCode()}".filter { it.isLetterOrDigit() }
     val callbackContext =
@@ -27,16 +34,19 @@ actual fun JsFunction(
             name,
             JavetCallbackType.DirectCallThisAndResult,
             IJavetDirectCallable.ThisAndResult<Exception> { thiz, args ->
-                (
-                    try {
-                        value(
-                            JsValue(context, thiz.toClone()),
-                            args?.map { arg -> JsValue(context, arg.toClone()) } ?: emptyList(),
-                        )
-                    } catch (e: Exception) {
-                        context.throwExceptionToJs(e)
-                    } as JsValueImpl
-                ).v8Value.toClone()
+                jsScope(context) {
+                    (
+                        try {
+                            value(
+                                this,
+                                args?.map { arg -> JsValue(context, arg.toClone()).autoClose() } ?: emptyList(),
+                                JsValue(context, thiz.toClone()).autoClose(),
+                            )
+                        } catch (e: Exception) {
+                            context.throwExceptionToJs(e)
+                        } as JsValueImpl
+                    ).v8Value.toClone()
+                }
             },
         )
     return JsFunctionImpl(
@@ -55,19 +65,4 @@ internal class JsFunctionImpl(
     JsFunction {
     val v8Function: V8ValueFunction
         get() = v8Value as V8ValueFunction
-
-    @Throws(JsException::class)
-    override fun apply(
-        thiz: JsValue,
-        args: List<JsValue>,
-    ): JsValue = context.callFunction(this, thiz, args)
-
-    @Throws(JsException::class)
-    override fun applyAsConstructor(args: List<JsValue>): JsValue =
-        context.callFunctionAsConstructor(
-            ArrayList<JsValue>(args.size + 1).apply {
-                add(this@JsFunctionImpl)
-                addAll(args)
-            },
-        )
 }

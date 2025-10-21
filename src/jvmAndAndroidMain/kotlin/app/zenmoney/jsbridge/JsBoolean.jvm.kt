@@ -11,12 +11,12 @@ actual sealed interface JsBooleanObject :
     JsObject,
     JsBoolean
 
-actual fun JsBoolean(
+internal actual fun JsBoolean(
     context: JsContext,
     value: Boolean,
 ): JsBoolean = JsValue(context, value) as JsBoolean
 
-actual fun JsBooleanObject(
+internal actual fun JsBooleanObject(
     context: JsContext,
     value: Boolean,
 ): JsBooleanObject =

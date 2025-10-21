@@ -7,6 +7,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
@@ -29,8 +30,8 @@ class JsContextTest {
     fun globalObjectEqualsGlobalThis() {
         val thiz = context.evaluateScript("this")
         val globalThis = context.evaluateScript("globalThis")
-        assertEquals(context.globalObject, thiz)
-        assertEquals(context.globalObject, globalThis)
+        assertEquals(context.globalThis, thiz)
+        assertEquals(context.globalThis, globalThis)
     }
 
     @Test
@@ -66,11 +67,11 @@ class JsContextTest {
     fun throwsJsExceptionWithNativeExceptionCause() {
         var exception: Exception? = null
         val f =
-            JsFunction(context) { args ->
+            JsFunction(context) { args, _ ->
                 exception = RuntimeException("my error message")
-                throw exception!!
+                throw exception
             }
-        context.globalObject["f"] = f
+        context.globalThis["f"] = f
         try {
             context.evaluateScript("f(1, 2)")
             assertTrue(false)
@@ -84,7 +85,7 @@ class JsContextTest {
         }
         try {
             f.apply(
-                context.globalObject,
+                context.globalThis,
                 listOf(
                     JsNumber(context, 1),
                     JsNumber(context, 2),
@@ -105,12 +106,12 @@ class JsContextTest {
     fun throwsJsExceptionWithNativeExceptionCauseWithEmptyMessage() {
         var exception: Exception? = null
         val f =
-            JsFunction(context) { args ->
+            JsFunction(context) { args, _ ->
                 exception = NullPointerException()
-                throw exception!!
+                throw exception
             }
 
-        context.globalObject["f"] = f
+        context.globalThis["f"] = f
         try {
             context.evaluateScript("f(1, 2)")
             assertTrue(false)
@@ -197,8 +198,8 @@ class JsContextTest {
     @Test
     fun passesUint8ArrayToJs() {
         val arr1 = JsUint8Array(context, byteArrayOf(1, 2, 3, 127, 128.toByte(), 255.toByte()))
-        context.globalObject["arr"] = arr1
-        val arr2 = context.globalObject["arr"]
+        context.globalThis["arr"] = arr1
+        val arr2 = context.globalThis.getValue("arr")
         assertIs<JsUint8Array>(arr2)
         val isEqual =
             context.evaluateScript(
@@ -232,10 +233,10 @@ class JsContextTest {
     fun objectEqualsTheSameObject() {
         val a1 = context.evaluateScript("var a = {a: 1}; a")
         assertIs<JsObject>(a1)
-        assertEquals(JsNumber(context, 1), a1["a"])
+        assertEquals(JsNumber(context, 1), a1.getValue("a"))
         val a2 = context.evaluateScript("a")
         assertIs<JsObject>(a2)
-        assertEquals(JsNumber(context, 1), a2["a"])
+        assertEquals(JsNumber(context, 1), a2.getValue("a"))
         assertEquals(a1, a2)
         assertEquals(a1.hashCode(), a2.hashCode())
         val b1 = context.evaluateScript("var b = {a: 1}; b")
@@ -247,10 +248,10 @@ class JsContextTest {
     fun arrayEqualsTheSameArray() {
         val a1 = context.evaluateScript("var a = [1]; a")
         assertIs<JsArray>(a1)
-        assertEquals(JsNumber(context, 1), a1[0])
+        assertEquals(JsNumber(context, 1), a1.getValue(0))
         val a2 = context.evaluateScript("a")
         assertIs<JsArray>(a2)
-        assertEquals(JsNumber(context, 1), a2[0])
+        assertEquals(JsNumber(context, 1), a2.getValue(0))
         assertEquals(a1, a2)
         assertEquals(a1.hashCode(), a2.hashCode())
         val b1 = context.evaluateScript("var b = [1]; b")
@@ -261,8 +262,8 @@ class JsContextTest {
     @Test
     fun callsNativeFunctionWithoutArguments() {
         var callCount = 0
-        context.globalObject["f"] =
-            JsFunction(context) { args ->
+        context.globalThis["f"] =
+            JsFunction(context) { args, _ ->
                 callCount++
                 assertEquals(emptyList(), args)
                 JsNumber(context, 3)
@@ -275,8 +276,8 @@ class JsContextTest {
     @Test
     fun callsNativeFunction() {
         var callCount = 0
-        context.globalObject["f"] =
-            JsFunction(context) { args ->
+        context.globalThis["f"] =
+            JsFunction(context) { args, _ ->
                 callCount++
                 assertEquals(4, args.size)
                 assertEquals(
@@ -301,15 +302,15 @@ class JsContextTest {
         var thiz: JsValue? = null
         var args: List<JsValue>? = null
         val obj = JsObject(context)
-        context.globalObject["obj"] = obj
+        context.globalThis["obj"] = obj
         val a = context.evaluateScript("var a = {}; a")
         val b = JsArray(context, listOf(a, JsNumber(context, 7.1)))
-        context.globalObject["b"] = b
+        context.globalThis["b"] = b
         obj["f"] =
-            JsFunction(context) {
+            JsFunction(context) { a, t ->
                 callCount++
-                thiz = this
-                args = it
+                thiz = t.escape()
+                args = a.escape()
                 JsNumber(context, 5)
             }
         val result = context.evaluateScript("obj.f(1, 2, a, b)")
@@ -331,8 +332,8 @@ class JsContextTest {
     @Test
     fun callsNativeFunctionReturningArrayOfObjects() {
         var callCount = 0
-        context.globalObject["f"] =
-            JsFunction(context) {
+        context.globalThis["f"] =
+            JsFunction(context) { _, _ ->
                 callCount++
                 JsArray(
                     context,
@@ -368,14 +369,14 @@ class JsContextTest {
         assertEquals(
             JsNumber(context, 5),
             f.apply(
-                context.globalObject,
+                context.globalThis,
                 listOf(
                     JsNumber(context, 2),
                     JsNumber(context, 3),
                 ),
             ),
         )
-        assertEquals(JsNumber(context, 1), context.globalObject["callCount"])
+        assertEquals(JsNumber(context, 1), context.globalThis.getValue("callCount"))
     }
 
     @Test
@@ -405,7 +406,7 @@ class JsContextTest {
             ) as JsFunction
         try {
             f.apply(
-                context.globalObject,
+                context.globalThis,
                 listOf(
                     JsNumber(context, 1),
                     JsNumber(context, 2),
@@ -429,7 +430,7 @@ class JsContextTest {
     @Test
     fun changesAreVisibleToBothJsAndNativeCode() {
         val a = JsObject(context)
-        context.globalObject["a"] = a
+        context.globalThis["a"] = a
         val b = JsObject(context)
         a["b"] = b
         b["c"] = JsNumber(context, 5)
@@ -446,8 +447,8 @@ class JsContextTest {
         val a = JsObject(context)
         val b = JsObject(context)
         a["b"] = b
-        context.globalObject["f"] =
-            JsFunction(context) { args ->
+        context.globalThis["f"] =
+            JsFunction(context) { _, _ ->
                 callCount++
                 a
             }
@@ -456,23 +457,21 @@ class JsContextTest {
         assertEquals(1, callCount)
         a["c"] = JsNumber(context, 1)
         a["d"] = JsNumber(context, 2)
-        b.close()
-        a.close()
     }
 
     @Test
     fun returnsJsErrorObjectAndConvertsItToJsExceptionWithNativeExceptionCause() {
         var exception: Exception? = null
         val f =
-            JsFunction(context) { args ->
+            JsFunction(context) { _, _ ->
                 exception = RuntimeException("my error message")
-                exception.toJsObject(context)
+                JsObject(exception)
             }
-        context.globalObject["f"] = f
+        context.globalThis["f"] = f
         val error = context.evaluateScript("var error = f(1, 2); error")
         assertIs<JsObject>(error)
         assertEquals(JsBoolean(context, true), context.evaluateScript("error instanceof Error"))
-        val e = error.toJsException()
+        val e = JsException(error)
         assertEquals("Error: my error message", e.message)
         assertEquals(exception, e.cause)
         assertEquals(
@@ -543,28 +542,33 @@ class JsContextTest {
                 JsEventLoop(coroutineContext).apply {
                     attachTo(context)
                 }
-            context.globalObject["f"] =
-                JsFunction(context) {
+            context.globalThis["f"] =
+                JsFunction(context) { _, _ ->
+                    val context = context
                     with(eventLoop) {
-                        async { JsNumber(context, 5) }.toJsPromise(context)
+                        JsPromise(
+                            async {
+                                JsNumber(context, 5)
+                            },
+                        )
                     }
                 }
             val a = context.evaluateScript("var a = [1]; a;")
             context.evaluateScript("f().then((result) => { a.push(result); });")
             assertIs<JsArray>(a)
             assertEquals(1, a.size)
-            assertEquals(JsNumber(context, 1), a[0])
+            assertEquals(JsNumber(context, 1), a.getValue(0))
             eventLoop.runUntilIdle()
             assertEquals(2, a.size)
-            assertEquals(JsNumber(context, 5), a[1])
+            assertEquals(JsNumber(context, 5), a.getValue(1))
         }
 
     @Test
     fun callsNativeFunctionAsConstructor() {
         var callCount = 0
         var thiz: JsValue? = null
-        context.globalObject["f"] =
-            JsFunction(context) { args ->
+        context.globalThis["f"] =
+            JsFunction(context) { args, t ->
                 callCount++
                 assertEquals(4, args.size)
                 assertEquals(
@@ -576,14 +580,14 @@ class JsContextTest {
                     ),
                     args,
                 )
-                thiz = this
+                thiz = t.escape()
                 context.UNDEFINED
             }
         val result = context.evaluateScript("new f(1, null, undefined, 2)")
         assertEquals(1, callCount)
         assertEquals(thiz, result)
         assertIs<JsObject>(result)
-        assertNotEquals(context.globalObject, result)
+        assertNotEquals(context.globalThis, result)
     }
 
     @Test
@@ -592,7 +596,7 @@ class JsContextTest {
         assertIs<JsFunction>(errorFunction)
         val error = errorFunction.applyAsConstructor(listOf(JsString(context, "my message")))
         assertIs<JsObject>(error)
-        context.globalObject["error"] = error
+        context.globalThis["error"] = error
         assertEquals(JsBoolean(context, true), context.evaluateScript("error instanceof Error"))
         assertEquals(JsString(context, "my message"), context.evaluateScript("error.message"))
     }
@@ -602,5 +606,23 @@ class JsContextTest {
         val a = JsObject(context)
         a.close()
         a.close()
+    }
+
+    @Test
+    fun scopeClosesOwnedObjects() {
+        lateinit var a: JsObject
+        jsScope(context) {
+            a = JsObject()
+        }
+        assertFails { a.getValue("a") }
+    }
+
+    @Test
+    fun scopeDoesNotCloseEscapedObject() {
+        lateinit var a: JsObject
+        jsScope(context) {
+            a = JsObject().escape()
+        }
+        a.getValue("a")
     }
 }

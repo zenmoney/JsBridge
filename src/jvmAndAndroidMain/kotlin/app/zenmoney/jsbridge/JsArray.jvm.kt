@@ -4,9 +4,9 @@ import com.caoccao.javet.values.reference.V8ValueArray
 
 actual sealed interface JsArray : JsObject {
     actual val size: Int
-
-    actual operator fun get(index: Int): JsValue
 }
+
+internal actual fun JsArray.getValue(index: Int): JsValue = JsValue(context, (this as JsArrayImpl).v8Array.get(index))
 
 internal class JsArrayImpl(
     context: JsContext,
@@ -18,11 +18,9 @@ internal class JsArrayImpl(
 
     override val size: Int
         get() = v8Array.length
-
-    override fun get(index: Int): JsValue = JsValue(context, v8Array.get(index))
 }
 
-actual fun JsArray(
+internal actual fun JsArray(
     context: JsContext,
     value: Iterable<JsValue>,
 ): JsArray =

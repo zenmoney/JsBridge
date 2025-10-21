@@ -8,12 +8,12 @@ actual sealed interface JsStringObject :
     JsObject,
     JsString
 
-actual fun JsString(
+internal actual fun JsString(
     context: JsContext,
     value: String,
 ): JsString = JsValue(context, value) as JsString
 
-actual fun JsStringObject(
+internal actual fun JsStringObject(
     context: JsContext,
     value: String,
 ): JsStringObject = context.evaluateScript("new String(\"${value.replace("\"", "\\\"")}\")") as JsStringObject

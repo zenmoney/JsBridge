@@ -9,15 +9,12 @@ actual sealed interface JsDate : JsObject {
     actual fun toMillis(): Long
 }
 
-actual fun JsDate(
+internal actual fun JsDate(
     context: JsContext,
     millis: Long,
 ): JsDate = JsValue(context, context.jsDate.constructWithArguments(listOf(millis))) as JsDate
 
-fun JsDate(
-    context: JsContext,
-    date: NSDate,
-): JsDate = JsValue(context, JSValue.valueWithObject(date, context.jsContext)) as JsDate
+fun JsScope.JsDate(date: NSDate): JsDate = JsValue(context, JSValue.valueWithObject(date, context.jsContext)).autoClose() as JsDate
 
 internal class JsDateImpl(
     context: JsContext,

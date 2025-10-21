@@ -26,12 +26,20 @@ actual sealed interface JsValue : AutoCloseable {
     actual val context: JsContext
 }
 
+internal actual val JsValue.core: JsValueCore
+    get() = (this as JsValueImpl)._core
+
 internal open class JsValueImpl(
-    final override val context: JsContext,
+    context: JsContext,
     val v8Value: V8Value,
 ) : JsValue {
+    @Suppress("PropertyName")
+    internal val _core = JsValueCore(context)
+    override val context: JsContext
+        get() = _core.context
+
     override fun close() {
-        context.closeValue(this)
+        _core.close(this)
     }
 
     override fun toString(): String = v8Value.toString()
@@ -59,11 +67,11 @@ internal fun JsValue(
             return context.UNDEFINED
         }
         if (value is V8ValueObject &&
-            value !== (context.globalObject as JsValueImpl).v8Value &&
-            value.strictEquals((context.globalObject as JsValueImpl).v8Value)
+            value !== (context.globalThis as JsValueImpl).v8Value &&
+            value.strictEquals((context.globalThis as JsValueImpl).v8Value)
         ) {
             value.closeQuietly()
-            return context.globalObject
+            return context.globalThis
         }
     }
     return when (value) {

@@ -10,15 +10,15 @@ actual sealed interface JsNumberObject :
     JsObject,
     JsNumber
 
-actual fun JsNumber(
+internal actual fun JsNumber(
     context: JsContext,
     value: Number,
 ): JsNumber = JsValue(context, value) as JsNumber
 
-actual fun JsNumberObject(
+internal actual fun JsNumberObject(
     context: JsContext,
     value: Number,
-): JsNumberObject = context.createNumberObject.apply(context.globalObject, listOf(JsNumber(context, value))) as JsNumberObject
+): JsNumberObject = context.createNumberObject.apply(context.globalThis, listOf(JsNumber(context, value))) as JsNumberObject
 
 internal class JsNumberImpl(
     context: JsContext,
