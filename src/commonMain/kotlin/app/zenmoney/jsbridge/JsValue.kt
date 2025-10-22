@@ -14,17 +14,20 @@ internal expect val JsValue.core: JsValueCore
 
 internal class JsValueCore(
     context: JsContext,
-) : JsScopedValue() {
+) : JsScopeItem() {
     @Suppress("PropertyName")
     internal var _context: JsContext? = context
     val context: JsContext
-        get() = _context ?: throw JsException("JsValue is already closed")
+        get() = checkNotNull(_context) { "JsValue is already closed" }
 
     fun close(value: JsValue) {
         _context?.closeValue(value)
         _context = null
     }
 }
+
+@Suppress("FunctionName")
+fun <T : JsValue> JsScope.JsValueAlias(value: T): T = context.createValueAlias(value).autoClose()
 
 fun JsValue.toJson(): String =
     jsScope(context) {
@@ -84,3 +87,5 @@ suspend fun JsValue.await(): JsValue {
         }
     }
 }
+
+fun JsValue.isNullOrUndefined(): Boolean = this == context.NULL || this == context.UNDEFINED

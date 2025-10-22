@@ -9,20 +9,6 @@ actual sealed interface JsStringObject :
     JsObject,
     JsString
 
-internal actual fun JsString(
-    context: JsContext,
-    value: String,
-): JsString = JsValue(context, value) as JsString
-
-internal actual fun JsStringObject(
-    context: JsContext,
-    value: String,
-): JsStringObject =
-    JsStringObjectImpl(
-        context,
-        context.v8Runtime.createV8ValueStringObject(value),
-    ).also { context.registerValue(it) }
-
 internal class JsStringImpl(
     context: JsContext,
     v8Value: V8ValueString,

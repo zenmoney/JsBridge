@@ -1,98 +1,86 @@
 package app.zenmoney.jsbridge
 
 import com.eclipsesource.v8.V8
+import com.eclipsesource.v8.V8Array
+import com.eclipsesource.v8.V8ArrayBuffer
 import com.eclipsesource.v8.V8Function
+import com.eclipsesource.v8.V8Object
+import com.eclipsesource.v8.V8TypedArray
 import com.eclipsesource.v8.V8Value
+import java.nio.ByteBuffer
 
 actual class JsContext : AutoCloseable {
     internal actual val core = JsContextCore()
+    private val v8Runtime: V8 = V8.createV8Runtime()
+
+    actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
+
+    actual val globalThis: JsObject =
+        JsObjectImpl(this, v8Runtime.executeObjectScript("this"))
+            .also { registerValue(it) }
+
+    internal actual val NULL: JsNull =
+        JsNullImpl(this, null)
+            .also { registerValue(it) }
+    internal actual val UNDEFINED: JsUndefined =
+        JsUndefinedImpl(this, v8Runtime.executeScript("undefined"))
+            .also { registerValue(it) }
 
     private var lastException: Throwable? = null
 
-    internal val v8Runtime: V8 = V8.createV8Runtime()
-
-    actual val globalThis: JsObject = JsObjectImpl(this, v8Runtime.executeObjectScript("this")).also { registerValue(it) }
-    actual val NULL: JsValue = JsValueImpl(this, null)
-    actual val UNDEFINED: JsValue = JsValueImpl(this, v8Runtime.executeScript("undefined")).also { registerValue(it) }
-
-    internal val cachedValues =
+    private val cachedValues =
         listOf(
             NULL,
             UNDEFINED,
             globalThis,
         )
 
-    actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
-
-    private var callFunction: JsFunction? = null
-    internal val callFunctionAsConstructor: JsFunction =
+    private val callFunction: JsFunction =
         evaluateScript(
             """
-            function appZenmoneyCallFunctionAsConstructor(f, ...args) {
+            (function () {
+                var f = arguments[0];
+                var thiz = arguments[1];
+                var args = Array.prototype.slice.call(arguments, 2);
+                try {
+                    appZenmoneyError = undefined;
+                    appZenmoneyErrorOccurred = undefined;
+                    return f.apply(thiz, args);
+                } catch (e) {
+                    appZenmoneyError = e;
+                    appZenmoneyErrorOccurred = true;
+                }
+            })
+            """.trimIndent(),
+        ) as JsFunction
+    private val callFunctionAsConstructor: JsFunction =
+        evaluateScript(
+            """
+            (function (f, ...args) {
                 return new f(...args);
-            };
-            appZenmoneyCallFunctionAsConstructor;
+            })
             """.trimIndent(),
         ) as JsFunction
-    internal val createBooleanObject: JsFunction =
-        evaluateScript(
-            """
-            function appZenmoneyBoolean(value) {
-                return new Boolean(value);
-            };
-            appZenmoneyBoolean
-            """.trimIndent(),
-        ) as JsFunction
-    internal val createDate: JsFunction =
-        evaluateScript(
-            """
-            function appZenmoneyDate(value) {
-                return new Date(value);
-            };
-            appZenmoneyDate
-            """.trimIndent(),
-        ) as JsFunction
-    internal val createNumberObject: JsFunction =
-        evaluateScript(
-            """
-            function appZenmoneyNumber(value) {
-                return new Number(value);
-            };
-            appZenmoneyNumber
-            """.trimIndent(),
-        ) as JsFunction
-    internal val createPromise: JsFunction =
-        evaluateScript(
-            """
-            function appZenmoneyPromise(executor) {
-                return new Promise(executor);
-            };
-            appZenmoneyPromise;
-            """.trimIndent(),
-        ) as JsFunction
-    internal val createStringObject: JsFunction =
-        evaluateScript(
-            """
-            function appZenmoneyString(value) {
-                return new String(value);
-            };
-            appZenmoneyString
-            """.trimIndent(),
-        ) as JsFunction
+
+    private val booleanClass: JsFunction = evaluateScript("Boolean") as JsFunction
+    private val dateClass: JsFunction = evaluateScript("Date") as JsFunction
+    private val errorClass: JsFunction = evaluateScript("Error") as JsFunction
+    private val numberClass: JsFunction = evaluateScript("Number") as JsFunction
+    private val promiseClass: JsFunction = evaluateScript("Promise") as JsFunction
+    private val stringClass: JsFunction = evaluateScript("String") as JsFunction
 
     internal val jsGetTime: V8Function =
         v8Runtime.executeScript(
             """
-            function appZenmoneyGetTime() {
+            (function () {
                 return this.getTime();
-            };
-            appZenmoneyGetTime
+            })
             """.trimIndent(),
         ) as V8Function
-    internal val jsTypeOf: V8Function =
+    private val jsTypeOf: V8Function =
         v8Runtime.executeScript(
             """
-            function appZenmoneyTypeOf() {
+            (function () {
                 const value = this;
                 if (value instanceof Boolean) {
                     return 'boolean';
@@ -106,8 +94,7 @@ actual class JsContext : AutoCloseable {
                     return 'Promise';
                 }
                 return typeof value;
-            };
-            appZenmoneyTypeOf;
+            })
             """.trimIndent(),
         ) as V8Function
 
@@ -135,38 +122,17 @@ actual class JsContext : AutoCloseable {
                 v8Value.closeQuietly()
             }
         }
-        return JsValue(this, v8Value)
+        return createValue(v8Value)
     }
 
-    internal fun callFunction(
-        f: JsFunctionImpl,
-        thiz: JsValue,
+    @Throws(JsException::class)
+    internal actual fun callFunction(
+        f: JsFunction,
         args: List<JsValue>,
+        thiz: JsValue,
     ): JsValue {
-        if (callFunction == null) {
-            callFunction =
-                evaluateScript(
-                    """
-                    function appZenmoneyCallFunction() {
-                        var f = arguments[0];
-                        var thiz = arguments[1];
-                        var args = Array.prototype.slice.call(arguments, 2);
-                        try {
-                            appZenmoneyError = undefined;
-                            appZenmoneyErrorOccurred = undefined;
-                            return f.apply(thiz, args);
-                        } catch (e) {
-                            appZenmoneyError = e;
-                            appZenmoneyErrorOccurred = true;
-                        }
-                    };
-                    appZenmoneyCallFunction;
-                    """.trimIndent(),
-                ) as JsFunction
-        }
         val fullArgs =
-            JsArray(
-                this,
+            createArray(
                 listOf(
                     f,
                     thiz,
@@ -184,32 +150,84 @@ actual class JsContext : AutoCloseable {
                 v8Value.closeQuietly()
             }
         }
-        return JsValue(this, v8Value)
+        return createValue(v8Value)
     }
+
+    @Throws(JsException::class)
+    internal actual fun callFunctionAsConstructor(
+        f: JsFunction,
+        args: List<JsValue>,
+    ): JsValue =
+        callFunctionAsConstructor.call(
+            ArrayList<JsValue>(args.size + 1).apply {
+                add(f)
+                addAll(args)
+            },
+        )
 
     private inline fun throwExceptionIfNeeded(ifException: () -> Unit) {
         jsScope(this) {
             val arr =
-                JsValue(
-                    context,
+                createValue(
                     v8Runtime.executeScript("[appZenmoneyError, appZenmoneyErrorOccurred]"),
                 ).autoClose() as JsArray
             val hasError = arr[1]
             if (hasError is JsBoolean && hasError.toBoolean()) {
                 val error = arr[0]
-                val e = createJsException(error)
+                val e = createException(error)
                 ifException()
                 throw e
             }
         }
     }
 
-    internal fun createJsException(e: JsValue): JsException {
+    internal actual fun createArray(value: Iterable<JsValue>): JsArray {
+        return JsArrayImpl(
+            this,
+            V8Array(v8Runtime).apply {
+                value.forEach { value ->
+                    if (value == NULL) {
+                        pushNull()
+                        return@forEach
+                    }
+                    if (value == UNDEFINED) {
+                        pushUndefined()
+                        return@forEach
+                    }
+                    val valueV8Value = (value as? JsValueImpl)?.v8Value as? V8Value
+                    if (valueV8Value != null) {
+                        push(valueV8Value)
+                        return@forEach
+                    }
+                    when (value) {
+                        is JsBoolean -> push(value.toBoolean())
+                        is JsNumber -> push(value.toNumber().toDouble())
+                        is JsString -> push(value.toString())
+                        else -> TODO()
+                    }
+                }
+            },
+        ).also { registerValue(it) }
+    }
+
+    internal actual fun createBoolean(value: Boolean): JsBoolean = createValue(value) as JsBoolean
+
+    internal actual fun createBooleanObject(value: Boolean): JsBooleanObject =
+        jsScope(this) {
+            (booleanClass.invokeAsConstructor(JsBoolean(value)) as JsBooleanObject).escape()
+        }
+
+    internal actual fun createDate(millis: Long): JsDate =
+        jsScope(this) {
+            (dateClass.invokeAsConstructor(JsNumber(millis)) as JsDate).escape()
+        }
+
+    internal actual fun createException(error: JsValue): JsException {
         val message =
-            if (e is JsString) {
-                "Error: $e"
+            if (error is JsString) {
+                "Error: $error"
             } else {
-                e.toString()
+                error.toString()
             }
         return JsException(
             message,
@@ -217,19 +235,142 @@ actual class JsContext : AutoCloseable {
                 ?.takeIf {
                     "Error: ${it.message}" == message || message == "Error: Unhandled Java Exception"
                 }?.also { lastException = null },
-            (if (e is JsObject) e.toPlainMap() else null) ?: emptyMap(),
+            (if (error is JsObject) error.toPlainMap() else null) ?: emptyMap(),
         )
     }
 
-    internal fun createJsError(e: Throwable): JsObject {
-        lastException = e
-        val message = e.message?.ifBlank { null }?.replace("\"", "\\\"")
-        return evaluateScript("new Error(${if (message == null) "" else "\"${message}\""})") as JsObject
+    internal actual fun createError(exception: Throwable): JsObject {
+        lastException = exception
+        return jsScope(this) {
+            (errorClass.invokeAsConstructor(JsString(exception.message?.ifBlank { null } ?: exception.toString())) as JsObject).escape()
+        }
     }
 
-    internal fun throwExceptionToJs(e: Throwable): Nothing {
-        lastException = e
-        throw e
+    internal actual fun createFunction(value: JsScope.(args: List<JsValue>, thiz: JsValue) -> JsValue): JsFunction =
+        JsFunctionImpl(
+            this,
+            V8Function(v8Runtime) { thiz, args ->
+                jsScope(this) {
+                    (
+                        try {
+                            value(
+                                this,
+                                args?.map { context.createValue(it).autoClose() } ?: emptyList(),
+                                context.createValue(thiz.twin()).autoClose(),
+                            )
+                        } catch (e: Exception) {
+                            context.lastException = e
+                            throw e
+                        } as JsValueImpl
+                    ).v8Value.let {
+                        if (it is V8Value) {
+                            it.twin()
+                        } else {
+                            it
+                        }
+                    }
+                }
+            },
+        ).also { registerValue(it) }
+
+    internal actual fun createNumber(value: Number): JsNumber = createValue(value) as JsNumber
+
+    internal actual fun createNumberObject(value: Number): JsNumberObject =
+        jsScope(this) {
+            (numberClass.invokeAsConstructor(JsNumber(value)) as JsNumberObject).escape()
+        }
+
+    internal actual fun createObject(): JsObject =
+        JsObjectImpl(this, V8Object(v8Runtime)).also {
+            registerValue(it)
+        }
+
+    internal actual fun createPromise(executor: JsScope.(JsFunction, JsFunction) -> Unit): JsPromise =
+        jsScope(this) {
+            (
+                promiseClass.invokeAsConstructor(
+                    JsFunction { args, _ ->
+                        executor(
+                            this,
+                            args[0] as JsFunction,
+                            args[1] as JsFunction,
+                        )
+                        context.UNDEFINED
+                    },
+                ) as JsPromise
+            ).escape()
+        }
+
+    internal actual fun createString(value: String): JsString = createValue(value) as JsString
+
+    internal actual fun createStringObject(value: String): JsStringObject =
+        jsScope(this) {
+            (stringClass.invokeAsConstructor(JsString(value)) as JsStringObject).escape()
+        }
+
+    internal actual fun createUint8Array(value: ByteArray): JsUint8Array = createValue(value) as JsUint8Array
+
+    internal fun createValue(value: Any?): JsValue {
+        if (value == null) {
+            return NULL
+        }
+        if (value is V8Value) {
+            if (!value.isUndefined && value.runtime != v8Runtime) {
+                throw IllegalArgumentException("value runtime must match the JsContext runtime")
+            }
+            cachedValues.forEach {
+                val cachedV8Value = (it as JsValueImpl).v8Value
+                if (cachedV8Value == value) {
+                    if (value !== cachedV8Value) {
+                        value.closeQuietly()
+                    }
+                    return it
+                }
+            }
+        }
+        return when (value) {
+            is Boolean -> JsBooleanImpl(this, value)
+            is Number -> JsNumberImpl(this, value.toDouble())
+            is String -> JsStringImpl(this, value)
+            is ByteArray -> {
+                val buffer = V8ArrayBuffer(v8Runtime, ByteBuffer.allocateDirect(value.size).apply { put(value) })
+                JsUint8ArrayImpl(
+                    this,
+                    V8TypedArray(
+                        v8Runtime,
+                        buffer,
+                        V8Value.UNSIGNED_INT_8_ARRAY,
+                        0,
+                        value.size,
+                    ),
+                ).also { buffer.closeQuietly() }
+            }
+            is V8TypedArray ->
+                if (value.type == V8TypedArray.UNSIGNED_INT_8_ARRAY) {
+                    JsUint8ArrayImpl(this, value)
+                } else {
+                    JsObjectImpl(this, value)
+                }
+            is V8Array -> JsArrayImpl(this, value)
+            is V8Function -> JsFunctionImpl(this, value)
+            is V8Object -> {
+                val type = jsTypeOf.call(value, null) as String
+                when (type) {
+                    "boolean" -> JsBooleanObjectImpl(this, value)
+                    "date" -> JsDateImpl(this, value)
+                    "number" -> JsNumberObjectImpl(this, value)
+                    "string" -> JsStringObjectImpl(this, value)
+                    "Promise" -> JsPromiseImpl(this, value)
+                    else -> JsObjectImpl(this, value)
+                }
+            }
+            else -> throw IllegalArgumentException("unexpected value ${value::class} $value")
+        }.also { registerValue(it) }
+    }
+
+    internal actual fun <T : JsValue> createValueAlias(value: T): T {
+        @Suppress("UNCHECKED_CAST")
+        return createValue((value as JsValueImpl).let { (it.v8Value as? V8Value)?.twin() ?: it.v8Value }) as T
     }
 
     internal fun registerValue(value: JsValue) {
@@ -237,7 +378,7 @@ actual class JsContext : AutoCloseable {
     }
 
     internal actual fun closeValue(value: JsValue) {
-        ((value as JsValueImpl).v8Value as? V8Value)?.close()
+        ((value as JsValueImpl).v8Value as? V8Value)?.closeQuietly()
         core.removeValue(value)
     }
 
@@ -249,9 +390,18 @@ actual class JsContext : AutoCloseable {
     }
 }
 
-internal fun V8Value.closeQuietly() {
+private fun V8Value.closeQuietly() {
     try {
         close()
     } catch (_: Exception) {
     }
+}
+
+private fun <T> V8Array.map(action: (Any?) -> T): List<T> {
+    val result = arrayListOf<T>()
+    var i = 0
+    while (i < length()) {
+        result.add(action(get(i++)))
+    }
+    return result
 }

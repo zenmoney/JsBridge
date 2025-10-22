@@ -2,13 +2,13 @@ package app.zenmoney.jsbridge
 
 expect sealed interface JsPromise : JsObject
 
-internal expect fun JsPromise(
+internal fun JsPromise(
     context: JsContext,
     executor: JsScope.(
         resolve: JsFunction,
         reject: JsFunction,
     ) -> Unit,
-): JsPromise
+): JsPromise = context.createPromise(executor)
 
 fun JsScope.JsPromise(
     executor: JsScope.(

@@ -2,7 +2,7 @@ package app.zenmoney.jsbridge
 
 class JsScope internal constructor(
     values: ArrayList<AutoCloseable>? = null,
-) : JsScopedValue(),
+) : JsScopeItem(),
     AutoCloseable {
     constructor(context: JsContext) : this(context.core.scopeValuesPool?.removeLastOrNull()) {
         _context = context
@@ -13,7 +13,7 @@ class JsScope internal constructor(
     private var values: ArrayList<AutoCloseable>? = values ?: arrayListOf()
     private var _context: JsContext? = null
     val context: JsContext
-        get() = _context ?: throw JsException("JsScope is already closed")
+        get() = checkNotNull(_context) { "JsScope is already closed" }
 
     fun <T : JsValue> autoClose(value: T) {
         require(context === value.context) { "Can't autoclose value from another context" }
@@ -52,13 +52,19 @@ class JsScope internal constructor(
     operator fun JsFunction.invoke(
         args: List<JsValue> = emptyList(),
         thiz: JsValue = context.globalThis,
-    ): JsValue = apply(thiz, args).autoClose()
+    ): JsValue = call(args, thiz).autoClose()
 
     @Throws(JsException::class)
     operator fun JsFunction.invoke(
         vararg args: JsValue,
         thiz: JsValue = context.globalThis,
-    ): JsValue = apply(thiz, args.asList()).autoClose()
+    ): JsValue = call(args.asList(), thiz).autoClose()
+
+    @Throws(JsException::class)
+    fun JsFunction.invokeAsConstructor(args: List<JsValue> = emptyList()): JsValue = callAsConstructor(args).autoClose()
+
+    @Throws(JsException::class)
+    fun JsFunction.invokeAsConstructor(vararg args: JsValue): JsValue = callAsConstructor(args.asList()).autoClose()
 
     override fun close() {
         values
@@ -75,7 +81,7 @@ class JsScope internal constructor(
 
     internal fun tryAutoClose(value: AutoCloseable): Boolean {
         val values = values ?: return false
-        val index = value.asScopedValue().indexInScope
+        val index = value.asScopeItem().indexInScope
         if (value === values.getOrNull(index)) {
             return true
         }
@@ -83,12 +89,12 @@ class JsScope internal constructor(
             return false
         }
         values.add(value)
-        value.asScopedValue().indexInScope = values.lastIndex
+        value.asScopeItem().indexInScope = values.lastIndex
         return true
     }
 
     internal fun tryEscape(value: AutoCloseable): Boolean {
-        val index = value.asScopedValue().indexInScope
+        val index = value.asScopeItem().indexInScope
         if (index < 0) {
             return true
         }
@@ -99,9 +105,9 @@ class JsScope internal constructor(
         val lastValue = values.removeAt(values.lastIndex)
         if (lastValue !== value) {
             values[index] = lastValue
-            lastValue.asScopedValue().indexInScope = index
+            lastValue.asScopeItem().indexInScope = index
         }
-        value.asScopedValue().indexInScope = -1
+        value.asScopeItem().indexInScope = -1
         return true
     }
 }
@@ -111,13 +117,13 @@ inline fun <T> jsScope(
     block: JsScope.() -> T,
 ) = JsScope(context).use(block)
 
-private fun Any.asScopedValue(): JsScopedValue =
+private fun Any.asScopeItem(): JsScopeItem =
     when (this) {
         is JsValue -> core
         is JsScope -> this
         else -> throw IllegalArgumentException("Invalid scoped value type ${this::class}")
     }
 
-sealed class JsScopedValue {
+sealed class JsScopeItem {
     internal var indexInScope: Int = -1
 }

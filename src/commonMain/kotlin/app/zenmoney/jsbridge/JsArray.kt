@@ -6,10 +6,10 @@ expect sealed interface JsArray : JsObject {
 
 internal expect fun JsArray.getValue(index: Int): JsValue
 
-internal expect fun JsArray(
+internal fun JsArray(
     context: JsContext,
     value: Iterable<JsValue>,
-): JsArray
+): JsArray = context.createArray(value)
 
 fun JsScope.JsArray(value: Iterable<JsValue>): JsArray = JsArray(context, value).autoClose()
 

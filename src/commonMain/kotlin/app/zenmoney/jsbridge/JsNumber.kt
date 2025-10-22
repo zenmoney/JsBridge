@@ -8,15 +8,15 @@ expect sealed interface JsNumberObject :
     JsObject,
     JsNumber
 
-internal expect fun JsNumber(
+internal fun JsNumber(
     context: JsContext,
     value: Number,
-): JsNumber
+): JsNumber = context.createNumber(value)
 
-internal expect fun JsNumberObject(
+internal fun JsNumberObject(
     context: JsContext,
     value: Number,
-): JsNumberObject
+): JsNumberObject = context.createNumberObject(value)
 
 fun JsScope.JsNumber(value: Number): JsNumber = JsNumber(context, value).autoClose()
 

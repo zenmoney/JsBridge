@@ -9,7 +9,7 @@ expect sealed interface JsObject : JsValue {
 
 internal expect fun JsObject.getValue(key: String): JsValue
 
-internal expect fun JsObject(context: JsContext): JsObject
+internal fun JsObject(context: JsContext): JsObject = context.createObject()
 
 fun JsScope.JsObject(): JsObject = JsObject(context).autoClose()
 

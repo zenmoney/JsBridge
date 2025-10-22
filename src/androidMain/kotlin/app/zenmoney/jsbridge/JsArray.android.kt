@@ -1,13 +1,12 @@
 package app.zenmoney.jsbridge
 
 import com.eclipsesource.v8.V8Array
-import com.eclipsesource.v8.V8Value
 
 actual sealed interface JsArray : JsObject {
     actual val size: Int
 }
 
-internal actual fun JsArray.getValue(index: Int): JsValue = JsValue(context, (this as JsArrayImpl).v8Array.get(index))
+internal actual fun JsArray.getValue(index: Int): JsValue = context.createValue((this as JsArrayImpl).v8Array.get(index))
 
 internal class JsArrayImpl(
     context: JsContext,
@@ -20,34 +19,3 @@ internal class JsArrayImpl(
     override val size: Int
         get() = v8Array.length()
 }
-
-internal actual fun JsArray(
-    context: JsContext,
-    value: Iterable<JsValue>,
-): JsArray =
-    JsArrayImpl(
-        context,
-        V8Array(context.v8Runtime).apply {
-            value.forEach { value ->
-                if (value == context.NULL) {
-                    pushNull()
-                    return@forEach
-                }
-                if (value == context.UNDEFINED) {
-                    pushUndefined()
-                    return@forEach
-                }
-                val valueV8Value = (value as? JsValueImpl)?.v8Value as? V8Value
-                if (valueV8Value != null) {
-                    push(valueV8Value)
-                    return@forEach
-                }
-                when (value) {
-                    is JsBoolean -> push(value.toBoolean())
-                    is JsNumber -> push(value.toNumber().toDouble())
-                    is JsString -> push(value.toString())
-                    else -> TODO()
-                }
-            }
-        },
-    ).also { context.registerValue(it) }

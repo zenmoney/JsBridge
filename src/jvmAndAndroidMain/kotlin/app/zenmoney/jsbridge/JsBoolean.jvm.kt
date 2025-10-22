@@ -11,20 +11,6 @@ actual sealed interface JsBooleanObject :
     JsObject,
     JsBoolean
 
-internal actual fun JsBoolean(
-    context: JsContext,
-    value: Boolean,
-): JsBoolean = JsValue(context, value) as JsBoolean
-
-internal actual fun JsBooleanObject(
-    context: JsContext,
-    value: Boolean,
-): JsBooleanObject =
-    JsBooleanObjectImpl(
-        context,
-        context.v8Runtime.createV8ValueBooleanObject(value),
-    ).also { context.registerValue(it) }
-
 internal class JsBooleanImpl(
     context: JsContext,
     v8Value: V8ValueBoolean,

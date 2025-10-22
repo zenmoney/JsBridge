@@ -8,14 +8,10 @@ actual sealed interface JsDate : JsObject {
     actual fun toMillis(): Long
 }
 
-internal actual fun JsDate(
-    context: JsContext,
-    millis: Long,
-): JsDate = JsValue(context, context.v8Runtime.createV8ValueZonedDateTime(millis)) as JsDate
-
 fun JsScope.JsDate(date: Date): JsDate = JsDate(context, date.time).autoClose()
 
-fun JsScope.JsDate(date: ZonedDateTime): JsDate = JsValue(context, context.v8Runtime.createV8ValueZonedDateTime(date)).autoClose() as JsDate
+fun JsScope.JsDate(date: ZonedDateTime): JsDate =
+    context.createValue(context.v8Runtime.createV8ValueZonedDateTime(date)).autoClose() as JsDate
 
 internal class JsDateImpl(
     context: JsContext,

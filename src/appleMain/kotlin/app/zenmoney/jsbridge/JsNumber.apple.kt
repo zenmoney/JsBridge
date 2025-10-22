@@ -10,16 +10,6 @@ actual sealed interface JsNumberObject :
     JsObject,
     JsNumber
 
-internal actual fun JsNumber(
-    context: JsContext,
-    value: Number,
-): JsNumber = JsValue(context, value) as JsNumber
-
-internal actual fun JsNumberObject(
-    context: JsContext,
-    value: Number,
-): JsNumberObject = context.evaluateScript("new Number($value)") as JsNumberObject
-
 internal class JsNumberImpl(
     context: JsContext,
     jsValue: JSValue,

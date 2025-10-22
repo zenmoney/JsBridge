@@ -6,12 +6,12 @@ class JsException(
     val data: Map<String, Any?> = emptyMap(),
 ) : Exception(message, cause)
 
-expect fun JsException(value: JsValue): JsException
+fun JsException(value: JsValue): JsException = value.context.createException(value)
 
 @Suppress("FunctionName")
-internal expect fun JsError(
+internal fun JsError(
     context: JsContext,
     exception: Throwable,
-): JsObject
+): JsObject = context.createError(exception)
 
 fun JsScope.JsObject(exception: Throwable): JsObject = JsError(context, exception).autoClose()

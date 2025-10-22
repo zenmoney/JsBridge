@@ -10,19 +10,6 @@ actual sealed interface JsUint8Array : JsObject {
     actual fun toByteArray(): ByteArray
 }
 
-internal actual fun JsUint8Array(
-    context: JsContext,
-    value: ByteArray,
-): JsUint8Array =
-    JsUint8ArrayImpl(
-        context,
-        context.jsUint8Array.constructWithArguments(
-            listOf(
-                JSValue.valueWithObject(value.asList(), context.jsContext)!!,
-            ),
-        )!!,
-    ).also { context.registerValue(it) }
-
 internal class JsUint8ArrayImpl(
     context: JsContext,
     jsValue: JSValue,

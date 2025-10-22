@@ -84,8 +84,7 @@ class JsContextTest {
             )
         }
         try {
-            f.apply(
-                context.globalThis,
+            f.call(
                 listOf(
                     JsNumber(context, 1),
                     JsNumber(context, 2),
@@ -130,6 +129,7 @@ class JsContextTest {
         assertIs<JsBoolean>(value)
         assertEquals(true, value.toBoolean())
         assertEquals(JsBoolean(context, true), value)
+        assertEquals(value, context.createValueAlias(value))
     }
 
     @Test
@@ -140,6 +140,7 @@ class JsContextTest {
         assertEquals(true, value.toBoolean())
         assertEquals(JsBooleanObject(context, true), value)
         assertNotEquals(JsBoolean(context, true), value)
+        assertEquals(value, context.createValueAlias(value))
     }
 
     @Test
@@ -149,6 +150,7 @@ class JsContextTest {
         assertEquals(3.0, value.toNumber().toDouble())
         assertEquals(JsNumber(context, 3), value)
         assertEquals(JsNumber(context, 3).hashCode(), value.hashCode())
+        assertEquals(value, context.createValueAlias(value))
     }
 
     @Test
@@ -160,6 +162,7 @@ class JsContextTest {
         assertEquals(JsNumberObject(context, 3), value)
         assertEquals(JsNumberObject(context, 3).hashCode(), value.hashCode())
         assertNotEquals(JsNumber(context, 3), value)
+        assertEquals(value, context.createValueAlias(value))
     }
 
     @Test
@@ -168,6 +171,7 @@ class JsContextTest {
         assertIs<JsString>(value)
         assertEquals("abc", value.toString())
         assertEquals(JsString(context, "abc"), value)
+        assertEquals(value, context.createValueAlias(value))
     }
 
     @Test
@@ -178,6 +182,7 @@ class JsContextTest {
         assertEquals("abc", value.toString())
         assertEquals(JsStringObject(context, "abc"), value)
         assertNotEquals(JsString(context, "abc"), value)
+        assertEquals(value, context.createValueAlias(value))
     }
 
     @Test
@@ -185,6 +190,7 @@ class JsContextTest {
         val value = context.evaluateScript("[\"abc\", 3.5, true, {a: 2.4}]")
         assertIs<JsArray>(value)
         assertEquals(listOf("abc", 3.5, true, mapOf("a" to 2.4)), value.toPlainList())
+        assertEquals(value, context.createValueAlias(value))
     }
 
     @Test
@@ -193,6 +199,7 @@ class JsContextTest {
         assertIs<JsUint8Array>(value)
         assertEquals(6, value.size)
         assertContentEquals(byteArrayOf(1, 2, 3, 127, 128.toByte(), 255.toByte()), value.toByteArray())
+        assertEquals(value, context.createValueAlias(value))
     }
 
     @Test
@@ -217,6 +224,8 @@ class JsContextTest {
             )
         assertIs<JsBoolean>(isEqual)
         assertTrue(isEqual.toBoolean())
+        assertEquals(arr1, context.createValueAlias(arr1))
+        assertEquals(arr1, context.createValueAlias(arr2))
     }
 
     @Test
@@ -227,6 +236,7 @@ class JsContextTest {
         val date = JsDate(context, 45678)
         assertEquals(date, value)
         assertEquals(date.hashCode(), value.hashCode())
+        assertEquals(value, context.createValueAlias(value))
     }
 
     @Test
@@ -242,6 +252,7 @@ class JsContextTest {
         val b1 = context.evaluateScript("var b = {a: 1}; b")
         assertNotEquals(a1, b1)
         assertNotEquals(a2, b1)
+        assertEquals(a1, context.createValueAlias(a1))
     }
 
     @Test
@@ -262,15 +273,17 @@ class JsContextTest {
     @Test
     fun callsNativeFunctionWithoutArguments() {
         var callCount = 0
-        context.globalThis["f"] =
+        val value =
             JsFunction(context) { args, _ ->
                 callCount++
                 assertEquals(emptyList(), args)
                 JsNumber(context, 3)
             }
+        context.globalThis["f"] = value
         val result = context.evaluateScript("f()")
         assertEquals(1, callCount)
         assertEquals(JsNumber(context, 3), result)
+        assertEquals(value, context.createValueAlias(value))
     }
 
     @Test
@@ -368,8 +381,7 @@ class JsContextTest {
         assertIs<JsFunction>(f)
         assertEquals(
             JsNumber(context, 5),
-            f.apply(
-                context.globalThis,
+            f.call(
                 listOf(
                     JsNumber(context, 2),
                     JsNumber(context, 3),
@@ -405,8 +417,7 @@ class JsContextTest {
                 """.trimIndent(),
             ) as JsFunction
         try {
-            f.apply(
-                context.globalThis,
+            f.call(
                 listOf(
                     JsNumber(context, 1),
                     JsNumber(context, 2),
@@ -417,12 +428,12 @@ class JsContextTest {
             assertEquals(JsNumber(context, 1), context.evaluateScript("callCount"))
             assertEquals("Error: Wrong this", e.message)
         }
-        f.apply(
-            foo,
+        f.call(
             listOf(
                 JsNumber(context, 1),
                 JsNumber(context, 2),
             ),
+            foo,
         )
         assertEquals(JsNumber(context, 2), context.evaluateScript("callCount"))
     }
@@ -594,7 +605,7 @@ class JsContextTest {
     fun callsFunctionAsConstructor() {
         val errorFunction = context.evaluateScript("Error")
         assertIs<JsFunction>(errorFunction)
-        val error = errorFunction.applyAsConstructor(listOf(JsString(context, "my message")))
+        val error = errorFunction.callAsConstructor(listOf(JsString(context, "my message")))
         assertIs<JsObject>(error)
         context.globalThis["error"] = error
         assertEquals(JsBoolean(context, true), context.evaluateScript("error instanceof Error"))

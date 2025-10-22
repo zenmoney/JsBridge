@@ -7,11 +7,6 @@ actual sealed interface JsDate : JsObject {
     actual fun toMillis(): Long
 }
 
-internal actual fun JsDate(
-    context: JsContext,
-    millis: Long,
-): JsDate = context.createDate.apply(context.globalThis, listOf(JsNumber(context, millis))) as JsDate
-
 fun JsScope.JsDate(date: Date): JsDate = JsDate(date.time)
 
 internal class JsDateImpl(

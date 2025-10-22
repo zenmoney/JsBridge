@@ -6,15 +6,15 @@ expect sealed interface JsStringObject :
     JsObject,
     JsString
 
-internal expect fun JsString(
+internal fun JsString(
     context: JsContext,
     value: String,
-): JsString
+): JsString = context.createString(value)
 
-internal expect fun JsStringObject(
+internal fun JsStringObject(
     context: JsContext,
     value: String,
-): JsStringObject
+): JsStringObject = context.createStringObject(value)
 
 fun JsScope.JsString(value: String): JsString = JsString(context, value).autoClose()
 

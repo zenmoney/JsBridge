@@ -8,15 +8,15 @@ expect sealed interface JsBooleanObject :
     JsObject,
     JsBoolean
 
-internal expect fun JsBoolean(
+internal fun JsBoolean(
     context: JsContext,
     value: Boolean,
-): JsBoolean
+): JsBoolean = context.createBoolean(value)
 
-internal expect fun JsBooleanObject(
+internal fun JsBooleanObject(
     context: JsContext,
     value: Boolean,
-): JsBooleanObject
+): JsBooleanObject = context.createBooleanObject(value)
 
 fun JsScope.JsBoolean(value: Boolean): JsBoolean = JsBoolean(context, value).autoClose()
 

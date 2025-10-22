@@ -11,8 +11,12 @@ internal actual val JsValue.core: JsValueCore
 
 internal open class JsValueImpl(
     context: JsContext,
-    val jsValue: JSValue,
+    jsValue: JSValue,
 ) : JsValue {
+    private var _jsValue: JSValue? = jsValue
+    val jsValue: JSValue
+        get() = checkNotNull(_jsValue) { "JsValue is already closed" }
+
     @Suppress("PropertyName")
     internal val _core = JsValueCore(context)
     override val context: JsContext
@@ -20,6 +24,7 @@ internal open class JsValueImpl(
 
     override fun close() {
         _core.close(this)
+        _jsValue = null
     }
 
     override fun toString(): String = jsValue.toString_() ?: jsValue.toString()
@@ -27,51 +32,4 @@ internal open class JsValueImpl(
     override fun hashCode(): Int = jsValue.hashCode()
 
     override fun equals(other: Any?): Boolean = other is JsValueImpl && context == other.context && jsValue.isEqualToObject(other.jsValue)
-}
-
-internal fun JsValue(
-    context: JsContext,
-    value: Any?,
-): JsValue {
-    if (value is JSValue) {
-        if (value.context != context.jsContext) {
-            throw IllegalArgumentException("value runtime must match the JsContext runtime")
-        }
-        if (value.isEqualToObject((context.globalThis as JsValueImpl).jsValue)) {
-            return context.globalThis
-        }
-    }
-    return when (value) {
-        null -> context.NULL
-        is JsValue -> value
-        is Boolean -> JsBooleanImpl(context, JSValue.valueWithBool(value, context.jsContext)!!)
-        is Int -> JsNumberImpl(context, JSValue.valueWithInt32(value, context.jsContext)!!)
-        is Number -> JsNumberImpl(context, JSValue.valueWithDouble(value.toDouble(), context.jsContext)!!)
-        is String -> JsStringImpl(context, JSValue.valueWithObject(value, context.jsContext)!!)
-        is ByteArray -> JsUint8Array(context, value)
-        is JSValue ->
-            when {
-                value.isNull -> context.NULL
-                value.isUndefined -> context.UNDEFINED
-                value.isBoolean -> JsBooleanImpl(context, value)
-                value.isNumber -> JsNumberImpl(context, value)
-                value.isString -> JsStringImpl(context, value)
-                value.isDate -> JsDateImpl(context, value)
-                value.isArray -> JsArrayImpl(context, value)
-                else -> {
-                    val type = context.jsTypeOf.callWithArguments(listOf(value))!!.toString()
-                    when {
-                        type == "boolean" -> JsBooleanObjectImpl(context, value)
-                        type == "number" -> JsNumberObjectImpl(context, value)
-                        type == "string" -> JsStringObjectImpl(context, value)
-                        type == "function" -> JsFunctionImpl(context, value)
-                        type == "Uint8Array" -> JsUint8ArrayImpl(context, value)
-                        type == "Promise" -> JsPromiseImpl(context, value)
-                        value.isObject -> JsObjectImpl(context, value)
-                        else -> TODO()
-                    }
-                }
-            }
-        else -> TODO()
-    }.also { context.registerValue(it) }
 }

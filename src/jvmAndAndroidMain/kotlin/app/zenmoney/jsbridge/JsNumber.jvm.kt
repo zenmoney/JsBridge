@@ -15,21 +15,6 @@ actual sealed interface JsNumberObject :
     JsObject,
     JsNumber
 
-internal actual fun JsNumber(
-    context: JsContext,
-    value: Number,
-): JsNumber = JsValue(context, value) as JsNumber
-
-internal actual fun JsNumberObject(
-    context: JsContext,
-    value: Number,
-): JsNumberObject =
-    when (value) {
-        is Int -> JsNumberObjectImpl(context, context.v8Runtime.createV8ValueIntegerObject(value))
-        is Long -> JsNumberObjectImpl(context, context.v8Runtime.createV8ValueLongObject(value))
-        else -> JsNumberObjectImpl(context, context.v8Runtime.createV8ValueDoubleObject(value.toDouble()))
-    }.also { context.registerValue(it) }
-
 internal class JsNumberImpl :
     JsValueImpl,
     JsNumber {
