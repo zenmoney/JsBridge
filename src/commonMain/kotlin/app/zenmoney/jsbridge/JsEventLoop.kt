@@ -63,33 +63,47 @@ class JsEventLoop(
         }
 
     fun tick() {
+        while (nextTickCallbacks.isNotEmpty() || immediateCallbacks.isNotEmpty()) {
+            runNextTickCallbacks()
+            runImmediateCallbacks()
+            runNextTickCallbacks()
+        }
+    }
+
+    private fun runNextTickCallbacks() {
         var i = 0
         while (i < nextTickCallbacks.size) {
-            val (callback, args) = nextTickCallbacks[i]
+            val (callback, args) = nextTickCallbacks[i++]
+            if (!job.isActive) {
+                closeValues(callback, args)
+                continue
+            }
             jsScope(callback.context) {
                 autoClose(callback)
                 autoClose(args)
-                if (job.isActive) {
-                    callback(args)
-                }
+                callback(args)
             }
-            i++
         }
         nextTickCallbacks.clear()
+    }
+
+    private fun runImmediateCallbacks() {
         val callbacks = immediateCallbacks
         immediateCallbacks = mutableIntObjectMapOf()
         callbacks.forEachValue { (callback, args) ->
+            if (!job.isActive) {
+                closeValues(callback, args)
+                return@forEachValue
+            }
             jsScope(callback.context) {
                 autoClose(callback)
                 autoClose(args)
-                if (job.isActive) {
-                    callback(args)
-                }
+                callback(args)
             }
         }
     }
 
-    suspend fun runUntilIdle() {
+    suspend fun runAndWaitForCompletion() {
         if (!job.isActive) {
             return
         }
@@ -122,6 +136,8 @@ class JsEventLoop(
                     }
                 resolve(value)
             }
+        }.invokeOnCompletion {
+            closeValues(resolve, reject)
         }
         return promise
     }
@@ -159,9 +175,8 @@ class JsEventLoop(
                 }
                 tick()
             }.apply {
-                invokeOnCompletion { _ ->
-                    callback.close()
-                    args.forEach { it.close() }
+                invokeOnCompletion {
+                    closeValues(callback, args)
                 }
             }
         return JsNumber(id)
@@ -196,9 +211,8 @@ class JsEventLoop(
                     tick()
                 }
             }.apply {
-                invokeOnCompletion { _ ->
-                    callback.close()
-                    args.forEach { it.close() }
+                invokeOnCompletion {
+                    closeValues(callback, args)
                 }
             }
         return JsNumber(id)
@@ -225,8 +239,23 @@ class JsEventLoop(
     private fun clearImmediate(args: List<JsValue>) {
         val id = (args.getOrNull(0) as? JsNumber)?.toNumber()?.toInt() ?: return
         immediateCallbacks.remove(id)?.also { (callback, args) ->
-            callback.close()
-            args.forEach { it.close() }
+            closeValues(callback, args)
         }
     }
+}
+
+private fun closeValues(
+    value: JsValue,
+    other: List<JsValue>,
+) {
+    value.close()
+    other.forEach { it.close() }
+}
+
+private fun closeValues(
+    value: JsValue,
+    other: JsValue,
+) {
+    value.close()
+    other.close()
 }

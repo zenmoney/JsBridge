@@ -508,7 +508,7 @@ class JsContextTest {
                 )
             assertIs<JsObject>(result)
             assertEquals(JsNumber(context, 5), result.await())
-            eventLoop.runUntilIdle()
+            eventLoop.runAndWaitForCompletion()
         }
 
     @Test
@@ -543,7 +543,7 @@ class JsContextTest {
                     e.data,
                 )
             }
-            eventLoop.runUntilIdle()
+            eventLoop.runAndWaitForCompletion()
         }
 
     @Test
@@ -569,7 +569,7 @@ class JsContextTest {
             assertIs<JsArray>(a)
             assertEquals(1, a.size)
             assertEquals(JsNumber(context, 1), a.getValue(0))
-            eventLoop.runUntilIdle()
+            eventLoop.runAndWaitForCompletion()
             assertEquals(2, a.size)
             assertEquals(JsNumber(context, 5), a.getValue(1))
         }
