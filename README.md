@@ -12,16 +12,13 @@ A Kotlin Multiplatform library that provides JavaScript engine integration for m
 ## Usage Examples
 
 ```kotlin
-val context = JsContext()
-context.globalObject["sumOf"] = JsFunction(context) { args ->
-    var sum = 0.0
-    args.forEach {
-        val n = it as JsNumber
-        sum += n.toNumber().toDouble()
+JsContext().use { context ->
+    val sum = jsScope(context) {
+        context.globalThis["sumOf"] = JsFunction { args, _ ->
+            JsNumber(args.sumOf { (it as JsNumber).toNumber().toDouble() })
+        }
+        (eval("sumOf(1, 2, 3, 4, 5)") as JsNumber).toNumber()
     }
-    JsNumber(this.context, sum)
+    println("sum = $sum") // sum = 15.0
 }
-val sum = context.evaluateScript("sumOf(1, 2, 3, 4, 5)") as JsNumber
-println("sum = $sum") // sum = 15
-context.close()
 ```
