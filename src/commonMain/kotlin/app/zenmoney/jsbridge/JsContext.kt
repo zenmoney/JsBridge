@@ -40,7 +40,7 @@ expect class JsContext : AutoCloseable {
 
     internal fun createException(error: JsValue): JsException
 
-    internal fun createFunction(value: JsScope.(args: List<JsValue>, thiz: JsValue) -> JsValue): JsFunction
+    internal fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction
 
     internal fun createNumber(value: Number): JsNumber
 

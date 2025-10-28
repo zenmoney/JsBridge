@@ -2,6 +2,25 @@ package app.zenmoney.jsbridge
 
 expect sealed interface JsFunction : JsObject
 
+class JsFunctionScope internal constructor(
+    context: JsContext,
+) : JsScope(context) {
+    @Suppress("PropertyName")
+    internal var _thiz: JsValue? = null
+    val thiz: JsValue
+        get() = checkNotNull(_thiz) { "JsFunctionScope is already closed" }
+
+    override fun close() {
+        _thiz = null
+        super.close()
+    }
+}
+
+internal inline fun <T> jsFunctionScope(
+    context: JsContext,
+    block: JsFunctionScope.() -> T,
+): T = JsFunctionScope(context).use(block)
+
 @Throws(JsException::class)
 internal fun JsFunction.call(
     args: List<JsValue> = emptyList(),
@@ -13,7 +32,7 @@ internal fun JsFunction.callAsConstructor(args: List<JsValue> = emptyList()): Js
 
 internal fun JsFunction(
     context: JsContext,
-    value: JsScope.(args: List<JsValue>, thiz: JsValue) -> JsValue,
+    value: JsFunctionScope.(args: List<JsValue>) -> JsValue,
 ): JsFunction = context.createFunction(value)
 
-fun JsScope.JsFunction(value: JsScope.(args: List<JsValue>, thiz: JsValue) -> JsValue): JsFunction = JsFunction(context, value).autoClose()
+fun JsScope.JsFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction = JsFunction(context, value).autoClose()

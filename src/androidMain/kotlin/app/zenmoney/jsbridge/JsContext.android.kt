@@ -246,17 +246,17 @@ actual class JsContext : AutoCloseable {
         }
     }
 
-    internal actual fun createFunction(value: JsScope.(args: List<JsValue>, thiz: JsValue) -> JsValue): JsFunction =
+    internal actual fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction =
         JsFunctionImpl(
             this,
             V8Function(v8Runtime) { thiz, args ->
-                jsScope(this) {
+                jsFunctionScope(this) {
                     (
                         try {
+                            _thiz = context.createValue(thiz.twin()).autoClose()
                             value(
                                 this,
                                 args?.map { context.createValue(it).autoClose() } ?: emptyList(),
-                                context.createValue(thiz.twin()).autoClose(),
                             )
                         } catch (e: Exception) {
                             context.lastException = e
@@ -289,11 +289,11 @@ actual class JsContext : AutoCloseable {
         jsScope(this) {
             (
                 promiseClass.invokeAsConstructor(
-                    JsFunction { args, _ ->
+                    JsFunction {
                         executor(
                             this,
-                            args[0] as JsFunction,
-                            args[1] as JsFunction,
+                            it[0] as JsFunction,
+                            it[1] as JsFunction,
                         )
                         context.UNDEFINED
                     },

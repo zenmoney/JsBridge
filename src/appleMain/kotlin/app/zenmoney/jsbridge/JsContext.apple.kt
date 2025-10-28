@@ -190,15 +190,15 @@ actual class JsContext : AutoCloseable {
         return jsError
     }
 
-    internal actual fun createFunction(value: JsScope.(args: List<JsValue>, thiz: JsValue) -> JsValue): JsFunction {
+    internal actual fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction {
         val f: () -> JSValue = {
-            jsScope(this) {
+            jsFunctionScope(this) {
                 (
                     try {
+                        _thiz = context.createValue(JSContext.currentThis()).autoClose()
                         value(
                             this,
                             JSContext.currentArguments()?.map { context.createValue(it).autoClose() } ?: emptyList(),
-                            context.createValue(JSContext.currentThis()).autoClose(),
                         )
                     } catch (e: Exception) {
                         context.jsContext.exception = context.createJsError(e)
@@ -230,11 +230,11 @@ actual class JsContext : AutoCloseable {
             .also { registerValue(it) }
 
     internal actual fun createPromise(executor: JsScope.(JsFunction, JsFunction) -> Unit): JsPromise =
-        createFunction { args, _ ->
+        createFunction {
             executor(
                 this,
-                args[0] as JsFunction,
-                args[1] as JsFunction,
+                it[0] as JsFunction,
+                it[1] as JsFunction,
             )
             context.UNDEFINED
         }.use {

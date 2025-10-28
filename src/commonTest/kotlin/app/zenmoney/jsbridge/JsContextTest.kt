@@ -67,7 +67,7 @@ class JsContextTest {
     fun throwsJsExceptionWithNativeExceptionCause() {
         var exception: Exception? = null
         val f =
-            JsFunction(context) { args, _ ->
+            JsFunction(context) {
                 exception = RuntimeException("my error message")
                 throw exception
             }
@@ -105,7 +105,7 @@ class JsContextTest {
     fun throwsJsExceptionWithNativeExceptionCauseWithEmptyMessage() {
         var exception: Exception? = null
         val f =
-            JsFunction(context) { args, _ ->
+            JsFunction(context) {
                 exception = NullPointerException()
                 throw exception
             }
@@ -274,9 +274,9 @@ class JsContextTest {
     fun callsNativeFunctionWithoutArguments() {
         var callCount = 0
         val value =
-            JsFunction(context) { args, _ ->
+            JsFunction(context) {
                 callCount++
-                assertEquals(emptyList(), args)
+                assertEquals(emptyList(), it)
                 JsNumber(context, 3)
             }
         context.globalThis["f"] = value
@@ -290,9 +290,9 @@ class JsContextTest {
     fun callsNativeFunction() {
         var callCount = 0
         context.globalThis["f"] =
-            JsFunction(context) { args, _ ->
+            JsFunction(context) {
                 callCount++
-                assertEquals(4, args.size)
+                assertEquals(4, it.size)
                 assertEquals(
                     listOf(
                         JsNumber(context, 1),
@@ -300,7 +300,7 @@ class JsContextTest {
                         context.UNDEFINED,
                         JsNumber(context, 2),
                     ),
-                    args,
+                    it,
                 )
                 JsNumber(context, 5)
             }
@@ -320,10 +320,10 @@ class JsContextTest {
         val b = JsArray(context, listOf(a, JsNumber(context, 7.1)))
         context.globalThis["b"] = b
         obj["f"] =
-            JsFunction(context) { a, t ->
+            JsFunction(context) {
                 callCount++
-                thiz = t.escape()
-                args = a.escape()
+                thiz = this.thiz.escape()
+                args = it.escape()
                 JsNumber(context, 5)
             }
         val result = context.evaluateScript("obj.f(1, 2, a, b)")
@@ -346,7 +346,7 @@ class JsContextTest {
     fun callsNativeFunctionReturningArrayOfObjects() {
         var callCount = 0
         context.globalThis["f"] =
-            JsFunction(context) { _, _ ->
+            JsFunction(context) {
                 callCount++
                 JsArray(
                     context,
@@ -459,7 +459,7 @@ class JsContextTest {
         val b = JsObject(context)
         a["b"] = b
         context.globalThis["f"] =
-            JsFunction(context) { _, _ ->
+            JsFunction(context) {
                 callCount++
                 a
             }
@@ -474,7 +474,7 @@ class JsContextTest {
     fun returnsJsErrorObjectAndConvertsItToJsExceptionWithNativeExceptionCause() {
         var exception: Exception? = null
         val f =
-            JsFunction(context) { _, _ ->
+            JsFunction(context) {
                 exception = RuntimeException("my error message")
                 JsObject(exception)
             }
@@ -554,7 +554,7 @@ class JsContextTest {
                     attachTo(context)
                 }
             context.globalThis["f"] =
-                JsFunction(context) { _, _ ->
+                JsFunction(context) {
                     JsPromise {
                         JsNumber(context, 5)
                     }
@@ -574,9 +574,9 @@ class JsContextTest {
         var callCount = 0
         var thiz: JsValue? = null
         context.globalThis["f"] =
-            JsFunction(context) { args, t ->
+            JsFunction(context) {
                 callCount++
-                assertEquals(4, args.size)
+                assertEquals(4, it.size)
                 assertEquals(
                     listOf(
                         JsNumber(context, 1),
@@ -584,9 +584,9 @@ class JsContextTest {
                         context.UNDEFINED,
                         JsNumber(context, 2),
                     ),
-                    args,
+                    it,
                 )
-                thiz = t.escape()
+                thiz = this.thiz.escape()
                 context.UNDEFINED
             }
         val result = context.evaluateScript("new f(1, null, undefined, 2)")

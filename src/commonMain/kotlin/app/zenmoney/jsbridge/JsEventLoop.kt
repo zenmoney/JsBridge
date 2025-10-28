@@ -2,9 +2,7 @@ package app.zenmoney.jsbridge
 
 import androidx.collection.mutableIntObjectMapOf
 import androidx.collection.mutableObjectListOf
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -40,29 +38,29 @@ class JsEventLoop(
                     }
                 }?.let { process ->
                     process["nextTick"] =
-                        JsFunction { args, _ ->
-                            nextTick(args)
+                        JsFunction {
+                            nextTick(it)
                             context.UNDEFINED
                         }
                 }
             context.globalThis["clearImmediate"] =
-                JsFunction { args, _ ->
-                    clearImmediate(args)
+                JsFunction {
+                    clearImmediate(it)
                     context.UNDEFINED
                 }
             context.globalThis["clearInterval"] =
-                JsFunction { args, _ ->
-                    clearInterval(args)
+                JsFunction {
+                    clearInterval(it)
                     context.UNDEFINED
                 }
             context.globalThis["clearTimeout"] =
-                JsFunction { args, _ ->
-                    clearTimeout(args)
+                JsFunction {
+                    clearTimeout(it)
                     context.UNDEFINED
                 }
-            context.globalThis["setImmediate"] = JsFunction { args, _ -> setImmediate(args) }
-            context.globalThis["setInterval"] = JsFunction { args, _ -> setInterval(args) }
-            context.globalThis["setTimeout"] = JsFunction { args, _ -> setTimeout(args) }
+            context.globalThis["setImmediate"] = JsFunction { setImmediate(it) }
+            context.globalThis["setInterval"] = JsFunction { setInterval(it) }
+            context.globalThis["setTimeout"] = JsFunction { setTimeout(it) }
         }
     }
 

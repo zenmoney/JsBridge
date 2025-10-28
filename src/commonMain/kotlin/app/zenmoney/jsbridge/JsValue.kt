@@ -66,13 +66,13 @@ suspend fun JsValue.await(): JsValue {
         suspendCancellableCoroutine<JsValue> { cont ->
             jsScope(context) {
                 then.autoClose()(
-                    JsFunction { args, _ ->
-                        cont.resume(args.firstOrNull()?.escape() ?: context.UNDEFINED)
+                    JsFunction {
+                        cont.resume(it.firstOrNull()?.escape() ?: context.UNDEFINED)
                         context.UNDEFINED
                     },
-                    JsFunction { args, _ ->
+                    JsFunction {
                         val exception =
-                            args.firstOrNull()?.let { JsException(it) }
+                            it.firstOrNull()?.let { JsException(it) }
                                 ?: JsException(
                                     message = "Promise rejected with no error",
                                     cause = null,

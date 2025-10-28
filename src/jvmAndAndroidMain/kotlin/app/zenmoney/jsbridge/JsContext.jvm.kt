@@ -199,20 +199,20 @@ actual class JsContext : AutoCloseable {
         }
     }
 
-    internal actual fun createFunction(value: JsScope.(args: List<JsValue>, thiz: JsValue) -> JsValue): JsFunction {
+    internal actual fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction {
         val name = "f$value${value.hashCode()}".filter { it.isLetterOrDigit() }
         val callbackContext =
             JavetCallbackContext(
                 name,
                 JavetCallbackType.DirectCallThisAndResult,
                 IJavetDirectCallable.ThisAndResult<Exception> { thiz, args ->
-                    jsScope(this) {
+                    jsFunctionScope(this) {
                         (
                             try {
+                                _thiz = context.createValue(thiz.toClone()).autoClose()
                                 value(
                                     this,
                                     args?.map { arg -> context.createValue(arg.toClone()).autoClose() } ?: emptyList(),
-                                    context.createValue(thiz.toClone()).autoClose(),
                                 )
                             } catch (e: Exception) {
                                 context.lastException = e
@@ -248,11 +248,11 @@ actual class JsContext : AutoCloseable {
         jsScope(this) {
             (
                 promiseClass.invokeAsConstructor(
-                    JsFunction { args, _ ->
+                    JsFunction {
                         executor(
                             this,
-                            args[0] as JsFunction,
-                            args[1] as JsFunction,
+                            it[0] as JsFunction,
+                            it[1] as JsFunction,
                         )
                         context.UNDEFINED
                     },
