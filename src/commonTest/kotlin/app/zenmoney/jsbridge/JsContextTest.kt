@@ -502,7 +502,7 @@ class JsContextTest {
                 context.evaluateScript(
                     """
                     new Promise((resolve) => {
-                        setTimeout(() => resolve(5), 50);
+                        setTimeout(() => resolve(Promise.resolve(5)), 50);
                     })
                     """.trimIndent(),
                 )

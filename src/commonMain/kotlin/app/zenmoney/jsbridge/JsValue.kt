@@ -1,11 +1,5 @@
 package app.zenmoney.jsbridge
 
-import kotlinx.coroutines.job
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.coroutineContext
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
-
 expect sealed interface JsValue : AutoCloseable {
     val context: JsContext
 }
@@ -50,41 +44,6 @@ internal fun JsValue.toBasicPlainValue(): Any? {
         is JsArray -> return toPlainList()
         is JsObject -> return toPlainMap()
         else -> toString()
-    }
-}
-
-suspend fun JsValue.await(): JsValue {
-    if (this !is JsObject) {
-        return this
-    }
-    return jsScope(context) {
-        val thiz = this@await
-        val then = (get("then") as? JsFunction)?.escape() ?: return@jsScope thiz
-        coroutineContext.job.invokeOnCompletion {
-            then.close()
-        }
-        suspendCancellableCoroutine<JsValue> { cont ->
-            jsScope(context) {
-                then.autoClose()(
-                    JsFunction {
-                        cont.resume(it.firstOrNull()?.escape() ?: context.UNDEFINED)
-                        context.UNDEFINED
-                    },
-                    JsFunction {
-                        val exception =
-                            it.firstOrNull()?.let { JsException(it) }
-                                ?: JsException(
-                                    message = "Promise rejected with no error",
-                                    cause = null,
-                                    data = emptyMap(),
-                                )
-                        cont.resumeWithException(exception)
-                        context.UNDEFINED
-                    },
-                    thiz = thiz,
-                ).escape()
-            }
-        }
     }
 }
 
