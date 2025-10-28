@@ -1,6 +1,6 @@
 package app.zenmoney.jsbridge
 
-class JsScope internal constructor(
+open class JsScope internal constructor(
     values: ArrayList<AutoCloseable>? = null,
 ) : JsScopeItem(),
     AutoCloseable {

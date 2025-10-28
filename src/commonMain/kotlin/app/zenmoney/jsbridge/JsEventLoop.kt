@@ -23,7 +23,9 @@ class JsEventLoop(
     private val nextTickCallbacks = mutableObjectListOf<Pair<JsFunction, List<JsValue>>>()
     private var immediateCallbacks = mutableIntObjectMapOf<Pair<JsFunction, List<JsValue>>>()
 
-    fun attachTo(context: JsContext) =
+    fun attachTo(context: JsContext) {
+        require(context.core.eventLoop == null || context.core.eventLoop == this) { "JsContext already has an event loop" }
+        context.core.eventLoop = this
         jsScope(context) {
             context.globalThis["process"]
                 .autoClose()
@@ -32,6 +34,7 @@ class JsEventLoop(
                         context.NULL,
                         context.UNDEFINED,
                         -> JsObject().also { process -> context.globalThis["process"] = process }
+
                         is JsObject -> it
                         else -> null
                     }
@@ -61,6 +64,7 @@ class JsEventLoop(
             context.globalThis["setInterval"] = JsFunction { args, _ -> setInterval(args) }
             context.globalThis["setTimeout"] = JsFunction { args, _ -> setTimeout(args) }
         }
+    }
 
     fun tick() {
         while (nextTickCallbacks.isNotEmpty() || immediateCallbacks.isNotEmpty()) {
@@ -110,36 +114,6 @@ class JsEventLoop(
         tick()
         job.complete()
         job.join()
-    }
-
-    fun JsScope.JsPromise(deferred: Deferred<JsValue>): JsPromise {
-        lateinit var resolve: JsFunction
-        lateinit var reject: JsFunction
-        val promise =
-            JsPromise { res, rej ->
-                resolve = res.escape()
-                reject = rej.escape()
-            }
-        val context = context
-        launch {
-            jsScope(context) {
-                autoClose(resolve)
-                autoClose(reject)
-                val value =
-                    try {
-                        deferred.await().autoClose()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        reject(JsObject(e))
-                        return@jsScope
-                    }
-                resolve(value)
-            }
-        }.invokeOnCompletion {
-            closeValues(resolve, reject)
-        }
-        return promise
     }
 
     private fun JsScope.nextTick(args: List<JsValue>) {

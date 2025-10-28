@@ -66,6 +66,7 @@ expect class JsContext : AutoCloseable {
 internal class JsContextCore : AutoCloseable {
     private var _scope: JsScope? = JsScope()
     var scopeValuesPool: MutableList<ArrayList<AutoCloseable>>? = arrayListOf()
+    var eventLoop: JsEventLoop? = null
 
     val scope: JsScope
         get() = checkNotNull(_scope) { "JsContext is already closed" }
@@ -81,5 +82,6 @@ internal class JsContextCore : AutoCloseable {
     override fun close() {
         scopeValuesPool = null
         _scope.also { _scope = null }?.close()
+        eventLoop = null
     }
 }

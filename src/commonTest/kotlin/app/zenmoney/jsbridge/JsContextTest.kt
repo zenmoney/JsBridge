@@ -555,13 +555,8 @@ class JsContextTest {
                 }
             context.globalThis["f"] =
                 JsFunction(context) { _, _ ->
-                    val context = context
-                    with(eventLoop) {
-                        JsPromise(
-                            async {
-                                JsNumber(context, 5)
-                            },
-                        )
+                    JsPromise {
+                        JsNumber(context, 5)
                     }
                 }
             val a = context.evaluateScript("var a = [1]; a;")
