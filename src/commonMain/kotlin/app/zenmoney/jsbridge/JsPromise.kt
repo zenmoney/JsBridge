@@ -41,6 +41,7 @@ fun JsScope.JsPromise(
     start: CoroutineStart = CoroutineStart.DEFAULT,
     block: suspend JsPromiseScope.() -> JsValue,
 ): JsPromise {
+    val eventLoop = context.core.eventLoop.checkNotNull()
     lateinit var resolve: JsFunction
     lateinit var reject: JsFunction
     val promise =
@@ -49,8 +50,7 @@ fun JsScope.JsPromise(
             reject = rej.escape()
         }
     val context = context
-    context.core.eventLoop
-        .checkNotNull()
+    eventLoop
         .launch(start = start) {
             jsPromiseScope(context) {
                 autoClose(resolve)
