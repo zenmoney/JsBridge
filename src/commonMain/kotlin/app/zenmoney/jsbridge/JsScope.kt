@@ -66,6 +66,8 @@ open class JsScope internal constructor(
     @Throws(JsException::class)
     fun JsFunction.invokeAsConstructor(vararg args: JsValue): JsValue = callAsConstructor(args.asList()).autoClose()
 
+    operator fun contains(value: JsValue): Boolean = values?.getOrNull(value.core.indexInScope) === value
+
     override fun close() {
         values
             ?.also { values = null }

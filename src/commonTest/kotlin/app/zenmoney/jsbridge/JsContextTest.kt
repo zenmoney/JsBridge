@@ -9,6 +9,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
@@ -610,7 +611,10 @@ class JsContextTest {
     @Test
     fun doesNotThrowOnRepeatingValueClose() {
         val a = JsObject(context)
+        assertFalse(a.isScoped)
+        assertFalse(a.isClosed)
         a.close()
+        assertTrue(a.isClosed)
         a.close()
     }
 
@@ -619,7 +623,10 @@ class JsContextTest {
         lateinit var a: JsObject
         jsScope(context) {
             a = JsObject()
+            assertFalse(a.isClosed)
+            assertTrue(a.isScoped)
         }
+        assertTrue(a.isClosed)
         assertFails { a.getValue("a") }
     }
 
@@ -628,7 +635,10 @@ class JsContextTest {
         lateinit var a: JsObject
         jsScope(context) {
             a = JsObject().escape()
+            assertFalse(a.isClosed)
+            assertFalse(a.isScoped)
         }
+        assertFalse(a.isClosed)
         a.getValue("a")
     }
 }
