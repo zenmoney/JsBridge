@@ -114,7 +114,7 @@ open class JsScope internal constructor(
     }
 }
 
-inline fun <T> jsScope(
+inline fun <T> jsScoped(
     context: JsContext,
     block: JsScope.() -> T,
 ) = JsScope(context).use(block)

@@ -192,7 +192,7 @@ actual class JsContext : AutoCloseable {
 
     internal actual fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction {
         val f: () -> JSValue = {
-            jsFunctionScope(this) {
+            jsFunctionScoped(this) {
                 (
                     try {
                         _thiz = context.createValue(JSContext.currentThis()).autoClose()

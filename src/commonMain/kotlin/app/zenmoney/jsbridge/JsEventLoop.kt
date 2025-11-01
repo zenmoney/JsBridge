@@ -24,7 +24,7 @@ class JsEventLoop(
     fun attachTo(context: JsContext) {
         require(context.core.eventLoop == null || context.core.eventLoop == this) { "JsContext already has an event loop" }
         context.core.eventLoop = this
-        jsScope(context) {
+        jsScoped(context) {
             context.globalThis["process"]
                 .autoClose()
                 .let {
@@ -80,7 +80,7 @@ class JsEventLoop(
                 closeValues(callback, args)
                 continue
             }
-            jsScope(callback.context) {
+            jsScoped(callback.context) {
                 autoClose(callback)
                 autoClose(args)
                 callback(args)
@@ -97,7 +97,7 @@ class JsEventLoop(
                 closeValues(callback, args)
                 return@forEachValue
             }
-            jsScope(callback.context) {
+            jsScoped(callback.context) {
                 autoClose(callback)
                 autoClose(args)
                 callback(args)
@@ -140,7 +140,7 @@ class JsEventLoop(
         timeoutJobs[id] =
             launch {
                 delay(delayMs)
-                jsScope(callback.context) {
+                jsScoped(callback.context) {
                     autoClose(callback)
                     autoClose(args)
                     callback(args)
@@ -175,7 +175,7 @@ class JsEventLoop(
             launch {
                 while (true) {
                     delay(delayMs)
-                    jsScope(callback.context) {
+                    jsScoped(callback.context) {
                         autoClose(callback)
                         autoClose(args)
                         callback(args)

@@ -15,7 +15,7 @@ fun JsScope.JsObject(): JsObject = JsObject(context).autoClose()
 
 val JsObject.keys: Set<String>
     get() =
-        jsScope(context) {
+        jsScoped(context) {
             val keysFunc = eval("Object.keys") as JsFunction
             val keys = keysFunc(this@keys) as JsArray
             keys.mapTo(linkedSetOf()) { it.toString() }

@@ -1,6 +1,5 @@
 package app.zenmoney.jsbridge
 
-import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -621,7 +620,7 @@ class JsContextTest {
     @Test
     fun scopeClosesOwnedObjects() {
         lateinit var a: JsObject
-        jsScope(context) {
+        jsScoped(context) {
             a = JsObject()
             assertFalse(a.isClosed)
             assertTrue(a.isScoped)
@@ -633,7 +632,7 @@ class JsContextTest {
     @Test
     fun scopeDoesNotCloseEscapedObject() {
         lateinit var a: JsObject
-        jsScope(context) {
+        jsScoped(context) {
             a = JsObject().escape()
             assertFalse(a.isClosed)
             assertFalse(a.isScoped)

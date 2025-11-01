@@ -166,7 +166,7 @@ actual class JsContext : AutoCloseable {
         )
 
     private inline fun throwExceptionIfNeeded(ifException: () -> Unit) {
-        jsScope(this) {
+        jsScoped(this) {
             val arr =
                 createValue(
                     v8Runtime.executeScript("[appZenmoneyError, appZenmoneyErrorOccurred]"),
@@ -213,12 +213,12 @@ actual class JsContext : AutoCloseable {
     internal actual fun createBoolean(value: Boolean): JsBoolean = createValue(value) as JsBoolean
 
     internal actual fun createBooleanObject(value: Boolean): JsBooleanObject =
-        jsScope(this) {
+        jsScoped(this) {
             (booleanClass.invokeAsConstructor(JsBoolean(value)) as JsBooleanObject).escape()
         }
 
     internal actual fun createDate(millis: Long): JsDate =
-        jsScope(this) {
+        jsScoped(this) {
             (dateClass.invokeAsConstructor(JsNumber(millis)) as JsDate).escape()
         }
 
@@ -241,7 +241,7 @@ actual class JsContext : AutoCloseable {
 
     internal actual fun createError(exception: Throwable): JsObject {
         lastException = exception
-        return jsScope(this) {
+        return jsScoped(this) {
             (errorClass.invokeAsConstructor(JsString(exception.message?.ifBlank { null } ?: exception.toString())) as JsObject).escape()
         }
     }
@@ -250,7 +250,7 @@ actual class JsContext : AutoCloseable {
         JsFunctionImpl(
             this,
             V8Function(v8Runtime) { thiz, args ->
-                jsFunctionScope(this) {
+                jsFunctionScoped(this) {
                     (
                         try {
                             _thiz = context.createValue(thiz.twin()).autoClose()
@@ -276,7 +276,7 @@ actual class JsContext : AutoCloseable {
     internal actual fun createNumber(value: Number): JsNumber = createValue(value) as JsNumber
 
     internal actual fun createNumberObject(value: Number): JsNumberObject =
-        jsScope(this) {
+        jsScoped(this) {
             (numberClass.invokeAsConstructor(JsNumber(value)) as JsNumberObject).escape()
         }
 
@@ -286,7 +286,7 @@ actual class JsContext : AutoCloseable {
         }
 
     internal actual fun createPromise(executor: JsScope.(JsFunction, JsFunction) -> Unit): JsPromise =
-        jsScope(this) {
+        jsScoped(this) {
             (
                 promiseClass.invokeAsConstructor(
                     JsFunction {
@@ -304,7 +304,7 @@ actual class JsContext : AutoCloseable {
     internal actual fun createString(value: String): JsString = createValue(value) as JsString
 
     internal actual fun createStringObject(value: String): JsStringObject =
-        jsScope(this) {
+        jsScoped(this) {
             (stringClass.invokeAsConstructor(JsString(value)) as JsStringObject).escape()
         }
 

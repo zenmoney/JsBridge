@@ -17,7 +17,7 @@ inline fun <R, C : MutableCollection<in R>> JsArray.mapTo(
     destination: C,
     transform: JsScope.(JsValue) -> R,
 ): C =
-    jsScope(context) {
+    jsScoped(context) {
         val n = size
         for (i in 0 until n) {
             destination.add(transform(this, get(i)))
@@ -30,7 +30,7 @@ fun <T> JsArray.map(transform: JsScope.(JsValue) -> T): List<T> = mapTo(ArrayLis
 fun JsArray.toList(): List<JsValue> = map { it.escape() }
 
 fun JsArray.forEach(action: JsScope.(JsValue) -> Unit) =
-    jsScope(context) {
+    jsScoped(context) {
         val n = size
         for (i in 0 until n) {
             action(get(i))

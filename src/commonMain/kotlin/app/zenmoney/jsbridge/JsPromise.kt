@@ -32,7 +32,7 @@ class JsPromiseScope internal constructor(
 ) : JsScope(context),
     CoroutineScope by context.core.eventLoop.checkNotNull()
 
-internal inline fun <T> jsPromiseScope(
+internal inline fun <T> jsPromiseScoped(
     context: JsContext,
     block: JsPromiseScope.() -> T,
 ): T = JsPromiseScope(context).use(block)
@@ -52,7 +52,7 @@ fun JsScope.JsPromise(
     val context = context
     eventLoop
         .launch(start = start) {
-            jsPromiseScope(context) {
+            jsPromiseScoped(context) {
                 autoClose(resolve)
                 autoClose(reject)
                 val value =
@@ -75,7 +75,7 @@ fun JsScope.JsPromise(
 
 suspend fun JsValue.await(): JsValue {
     val thiz = this
-    return jsScope(context) {
+    return jsScoped(context) {
         var value = thiz
         while (true) {
             val then = (value as? JsObject)?.get("then") as? JsFunction

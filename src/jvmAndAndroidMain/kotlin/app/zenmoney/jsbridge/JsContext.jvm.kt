@@ -141,7 +141,7 @@ actual class JsContext : AutoCloseable {
         )
 
     private inline fun throwExceptionIfNeeded(ifException: () -> Unit) {
-        jsScope(this) {
+        jsScoped(this) {
             val arr =
                 createValue(
                     v8Runtime.getExecutor("[appZenmoneyError, appZenmoneyErrorOccurred]").execute(),
@@ -194,7 +194,7 @@ actual class JsContext : AutoCloseable {
 
     internal actual fun createError(exception: Throwable): JsObject {
         lastException = exception
-        return jsScope(this) {
+        return jsScoped(this) {
             (errorClass.invokeAsConstructor(JsString(exception.message?.ifBlank { null } ?: exception.toString())) as JsObject).escape()
         }
     }
@@ -206,7 +206,7 @@ actual class JsContext : AutoCloseable {
                 name,
                 JavetCallbackType.DirectCallThisAndResult,
                 IJavetDirectCallable.ThisAndResult<Exception> { thiz, args ->
-                    jsFunctionScope(this) {
+                    jsFunctionScoped(this) {
                         (
                             try {
                                 _thiz = context.createValue(thiz.toClone()).autoClose()
@@ -245,7 +245,7 @@ actual class JsContext : AutoCloseable {
             .also { registerValue(it) }
 
     internal actual fun createPromise(executor: JsScope.(JsFunction, JsFunction) -> Unit): JsPromise =
-        jsScope(this) {
+        jsScoped(this) {
             (
                 promiseClass.invokeAsConstructor(
                     JsFunction {

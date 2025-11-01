@@ -16,7 +16,7 @@ class JsFunctionScope internal constructor(
     }
 }
 
-internal inline fun <T> jsFunctionScope(
+internal inline fun <T> jsFunctionScoped(
     context: JsContext,
     block: JsFunctionScope.() -> T,
 ): T = JsFunctionScope(context).use(block)

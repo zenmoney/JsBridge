@@ -24,7 +24,7 @@ internal class JsValueCore(
 fun <T : JsValue> JsScope.JsValueAlias(value: T): T = context.createValueAlias(value).autoClose()
 
 fun JsValue.toJson(): String =
-    jsScope(context) {
+    jsScoped(context) {
         val stringify = eval("JSON.stringify") as JsFunction
         stringify(this@toJson).toString()
     }
