@@ -73,20 +73,17 @@ fun JsScope.JsPromise(
     return promise
 }
 
-suspend fun JsValue.await(): JsValue {
+internal suspend fun JsValue.awaitInScope(scope: JsScope): JsValue {
     val thiz = this
-    return jsScoped(context) {
+    return with(scope) {
         var value = thiz
         while (true) {
-            val then = (value as? JsObject)?.get("then") as? JsFunction
-            if (then == null) {
-                break
-            }
+            val then = (value as? JsObject)?.get("then") as? JsFunction ?: break
             value =
                 suspendCancellableCoroutine { cont ->
                     then(
                         JsFunction {
-                            cont.resume(it.firstOrNull()?.escape() ?: context.UNDEFINED)
+                            cont.resume(it.firstOrNull()?.escape()?.also { value -> scope.autoClose(value) } ?: context.UNDEFINED)
                             context.UNDEFINED
                         },
                         JsFunction {
@@ -102,8 +99,8 @@ suspend fun JsValue.await(): JsValue {
                         },
                         thiz = value,
                     )
-                }.autoClose()
+                }
         }
-        if (value === thiz) thiz else value.escape()
+        if (value === thiz) JsValueAlias(thiz) else value
     }
 }

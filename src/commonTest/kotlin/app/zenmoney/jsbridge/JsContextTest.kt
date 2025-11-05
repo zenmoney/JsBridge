@@ -507,7 +507,7 @@ class JsContextTest {
                     """.trimIndent(),
                 )
             assertIs<JsObject>(result)
-            assertEquals(JsNumber(context, 5), result.await())
+            assertEquals(JsNumber(context, 5), jsScoped(context) { result.await().escape() })
             eventLoop.runAndWaitForCompletion()
         }
 
@@ -534,7 +534,7 @@ class JsContextTest {
                 )
             assertIs<JsObject>(result)
             try {
-                result.await()
+                jsScoped(context) { result.await().escape() }
                 assertTrue(false)
             } catch (e: JsException) {
                 assertEquals("Error: my error message", e.message)
