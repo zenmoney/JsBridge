@@ -15,6 +15,7 @@ version = "2.0.0-rc2"
 repositories {
     google()
     mavenCentral()
+    maven(url = "https://jitpack.io")
 }
 
 ktlint {
@@ -72,7 +73,7 @@ kotlin {
         }
         val androidMain by getting {
             dependencies {
-                implementation("com.eclipsesource.j2v8:j2v8:6.2.1@aar")
+                implementation("com.github.ynab:j2v8:6.2.1-16kb.2")
             }
         }
         val androidInstrumentedTest by getting {

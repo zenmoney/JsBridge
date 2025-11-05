@@ -12,8 +12,8 @@ pluginManagement {
         mavenCentral()
     }
     plugins {
-        kotlin("multiplatform") version "2.2.20"
-        kotlin("plugin.serialization") version "2.2.20"
+        kotlin("multiplatform") version "2.2.21"
+        kotlin("plugin.serialization") version "2.2.21"
         id("org.jlleitschuh.gradle.ktlint") version "13.1.0"
     }
 }
