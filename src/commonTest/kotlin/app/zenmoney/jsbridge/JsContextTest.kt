@@ -138,7 +138,7 @@ class JsContextTest {
         assertIs<JsBoolean>(value)
         assertIs<JsBooleanObject>(value)
         assertEquals(true, value.toBoolean())
-        assertEquals(JsBooleanObject(context, true), value)
+        assertNotEquals(JsBooleanObject(context, true), value)
         assertNotEquals(JsBoolean(context, true), value)
         assertEquals(value, context.createValueAlias(value))
     }
@@ -159,8 +159,7 @@ class JsContextTest {
         assertIs<JsNumber>(value)
         assertIs<JsNumberObject>(value)
         assertEquals(3.0, value.toNumber().toDouble())
-        assertEquals(JsNumberObject(context, 3), value)
-        assertEquals(JsNumberObject(context, 3).hashCode(), value.hashCode())
+        assertNotEquals(JsNumberObject(context, 3), value)
         assertNotEquals(JsNumber(context, 3), value)
         assertEquals(value, context.createValueAlias(value))
     }
@@ -180,7 +179,7 @@ class JsContextTest {
         assertIs<JsString>(value)
         assertIs<JsStringObject>(value)
         assertEquals("abc", value.toString())
-        assertEquals(JsStringObject(context, "abc"), value)
+        assertNotEquals(JsStringObject(context, "abc"), value)
         assertNotEquals(JsString(context, "abc"), value)
         assertEquals(value, context.createValueAlias(value))
     }

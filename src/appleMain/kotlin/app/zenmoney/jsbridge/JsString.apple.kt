@@ -18,8 +18,4 @@ internal class JsStringObjectImpl(
     context: JsContext,
     jsValue: JSValue,
 ) : JsObjectImpl(context, jsValue),
-    JsStringObject {
-    override fun hashCode(): Int = toString().hashCode()
-
-    override fun equals(other: Any?): Boolean = other is JsStringObjectImpl && toString() == other.toString()
-}
+    JsStringObject

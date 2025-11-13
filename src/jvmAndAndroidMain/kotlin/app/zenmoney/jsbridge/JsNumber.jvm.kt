@@ -61,9 +61,5 @@ internal class JsNumberObjectImpl :
         v8Value: V8ValueDoubleObject,
     ) : super(context, v8Value)
 
-    override fun hashCode(): Int = value.hashCode()
-
-    override fun equals(other: Any?): Boolean = other is JsNumberObjectImpl && value == other.value
-
     override fun toNumber(): Number = value
 }

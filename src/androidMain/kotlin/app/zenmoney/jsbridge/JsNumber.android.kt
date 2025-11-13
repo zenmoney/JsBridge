@@ -29,9 +29,5 @@ internal class JsNumberObjectImpl(
     JsNumberObject {
     private val value: Double = value.toString().toDouble()
 
-    override fun hashCode(): Int = value.hashCode()
-
-    override fun equals(other: Any?): Boolean = other is JsNumberObjectImpl && value == other.value
-
     override fun toNumber(): Number = value
 }

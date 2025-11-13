@@ -23,9 +23,5 @@ internal class JsBooleanObjectImpl(
     jsValue: JSValue,
 ) : JsObjectImpl(context, jsValue),
     JsBooleanObject {
-    override fun hashCode(): Int = toBoolean().hashCode()
-
-    override fun equals(other: Any?): Boolean = other is JsBooleanObjectImpl && toBoolean() == other.toBoolean()
-
     override fun toBoolean(): Boolean = jsValue.toBool()
 }

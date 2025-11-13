@@ -25,9 +25,5 @@ internal class JsStringObjectImpl(
     v8Value: V8Object,
 ) : JsObjectImpl(context, v8Value),
     JsStringObject {
-    override fun hashCode(): Int = toString().hashCode()
-
-    override fun equals(other: Any?): Boolean = other is JsStringObjectImpl && toString() == other.toString()
-
     override fun toString(): String = v8Value.toString()
 }

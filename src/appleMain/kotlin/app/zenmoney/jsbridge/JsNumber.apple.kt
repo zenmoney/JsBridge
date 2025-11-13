@@ -27,9 +27,5 @@ internal class JsNumberObjectImpl(
     jsValue: JSValue,
 ) : JsObjectImpl(context, jsValue),
     JsNumberObject {
-    override fun hashCode(): Int = toNumber().hashCode()
-
-    override fun equals(other: Any?): Boolean = other is JsNumberObjectImpl && toNumber() == other.toNumber()
-
     override fun toNumber(): Number = jsValue.toDouble()
 }

@@ -29,9 +29,5 @@ internal class JsBooleanObjectImpl(
     JsBooleanObject {
     private val value: Boolean = v8Value.toString() == "true"
 
-    override fun hashCode(): Int = value.hashCode()
-
-    override fun equals(other: Any?): Boolean = other is JsBooleanObjectImpl && value == other.value
-
     override fun toBoolean(): Boolean = value
 }

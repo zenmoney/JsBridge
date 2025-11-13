@@ -34,9 +34,5 @@ internal class JsBooleanObjectImpl(
             v8PrimitiveValue.value.also { v8PrimitiveValue.closeQuietly() }
         }
 
-    override fun hashCode(): Int = value.hashCode()
-
-    override fun equals(other: Any?): Boolean = other is JsBooleanObjectImpl && value == other.value
-
     override fun toBoolean(): Boolean = value
 }
