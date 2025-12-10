@@ -2,18 +2,51 @@ package app.zenmoney.jsbridge
 
 import androidx.collection.mutableIntObjectMapOf
 import androidx.collection.mutableObjectListOf
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
 
 class JsEventLoop(
     context: CoroutineContext,
 ) : CoroutineScope {
-    private val job = Job(context[Job])
+    @Volatile
+    var onCompletion: (isCancelled: Boolean, exception: Throwable?) -> Unit = { _, _ -> }
 
-    override val coroutineContext: CoroutineContext = context + job
+    private val job =
+        Job().apply {
+            invokeOnCompletion {
+                val dispatcher = context[CoroutineDispatcher] ?: Dispatchers.Unconfined
+                dispatcher.dispatch(context) {
+                    nextTickCallbacks.forEach { (callback, args) -> closeValues(callback, args) }
+                    nextTickCallbacks.clear()
+                    immediateCallbacks.forEachValue { (callback, args) -> closeValues(callback, args) }
+                    immediateCallbacks.clear()
+                }
+                var exception = it
+                while (exception is CancellationException) {
+                    exception = exception.cause
+                }
+                onCompletion(it != null, exception)
+            }
+        }
+
+    override val coroutineContext: CoroutineContext =
+        context +
+            job +
+            CoroutineExceptionHandler { _, _ -> }
 
     private var i = 0
     private val timeoutJobs = mutableIntObjectMapOf<Job>()
@@ -64,7 +97,7 @@ class JsEventLoop(
         }
     }
 
-    fun tick() {
+    private fun tick() {
         while (nextTickCallbacks.isNotEmpty() || immediateCallbacks.isNotEmpty()) {
             runNextTickCallbacks()
             runImmediateCallbacks()
@@ -105,16 +138,55 @@ class JsEventLoop(
         }
     }
 
-    suspend fun runAndWaitForCompletion() {
+    suspend fun runAndComplete() {
         if (!job.isActive) {
             return
         }
-        tick()
+        run()
         job.complete()
         job.join()
     }
 
+    suspend fun run() {
+        if (!job.isActive) {
+            return
+        }
+        withContext(coroutineContext) {
+            tick()
+        }
+        while (true) {
+            var hasChildren = false
+            job.children.forEach {
+                hasChildren = true
+                it.join()
+                withContext(coroutineContext) {
+                    tick()
+                }
+            }
+            if (!hasChildren) break
+        }
+    }
+
+    fun cancel(exception: Throwable? = null) {
+        cancel(exception?.message ?: "", exception)
+    }
+
+    fun launchWithCallback(block: (callback: (exception: Throwable?) -> Unit) -> Unit) {
+        launch {
+            suspendCoroutine { cont ->
+                block { exception ->
+                    if (exception != null) {
+                        cont.resumeWithException(exception)
+                    } else {
+                        cont.resume(Unit)
+                    }
+                }
+            }
+        }
+    }
+
     private fun JsScope.nextTick(args: List<JsValue>) {
+        ensureActive()
         val callback = args.getOrNull(0)
         if (callback !is JsFunction) {
             throw IllegalArgumentException("The \"callback\" argument must be of type function.")
@@ -126,6 +198,7 @@ class JsEventLoop(
     }
 
     private fun JsScope.setTimeout(args: List<JsValue>): JsNumber {
+        ensureActive()
         val callback = args.getOrNull(0)
         if (callback !is JsFunction) {
             throw IllegalArgumentException("The \"callback\" argument must be of type function.")
@@ -160,6 +233,7 @@ class JsEventLoop(
     }
 
     private fun JsScope.setInterval(args: List<JsValue>): JsNumber {
+        ensureActive()
         val callback = args.getOrNull(0)
         if (callback !is JsFunction) {
             throw IllegalArgumentException("The \"callback\" argument must be of type function.")
@@ -196,6 +270,7 @@ class JsEventLoop(
     }
 
     private fun JsScope.setImmediate(args: List<JsValue>): JsNumber {
+        ensureActive()
         val callback = args.getOrNull(0)
         if (callback !is JsFunction) {
             throw IllegalArgumentException("The \"callback\" argument must be of type function.")
@@ -204,7 +279,7 @@ class JsEventLoop(
         val id = i++
         escape(callback)
         escape(args)
-        immediateCallbacks[i] = Pair(callback, args)
+        immediateCallbacks[id] = Pair(callback, args)
         return JsNumber(id)
     }
 
@@ -222,12 +297,4 @@ private fun closeValues(
 ) {
     value.close()
     other.forEach { it.close() }
-}
-
-private fun closeValues(
-    value: JsValue,
-    other: JsValue,
-) {
-    value.close()
-    other.close()
 }

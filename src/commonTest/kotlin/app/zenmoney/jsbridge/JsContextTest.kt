@@ -1,5 +1,7 @@
 package app.zenmoney.jsbridge
 
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -11,6 +13,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class JsContextTest {
@@ -121,6 +124,27 @@ class JsContextTest {
                 e.data,
             )
         }
+    }
+
+    @Test
+    fun catchesNativeException() {
+        var exception: Exception? = null
+        val f =
+            JsFunction(context) {
+                exception = RuntimeException("my error message")
+                throw exception
+            }
+        context.globalThis["f"] = f
+        val error = context.evaluateScript("try { f(1, 2) } catch (e) { e }")
+        assertIs<JsObject>(error)
+        assertEquals(JsString(context, "my error message"), error.getValue("message"))
+        val e = JsException(error)
+        assertEquals("Error: my error message", e.message)
+        assertEquals(exception, e.cause)
+        assertEquals(
+            emptyMap(),
+            e.data,
+        )
     }
 
     @Test
@@ -507,7 +531,7 @@ class JsContextTest {
                 )
             assertIs<JsObject>(result)
             assertEquals(JsNumber(context, 5), jsScoped(context) { result.await().escape() })
-            eventLoop.runAndWaitForCompletion()
+            eventLoop.runAndComplete()
         }
 
     @Test
@@ -542,7 +566,7 @@ class JsContextTest {
                     e.data,
                 )
             }
-            eventLoop.runAndWaitForCompletion()
+            eventLoop.runAndComplete()
         }
 
     @Test
@@ -563,7 +587,7 @@ class JsContextTest {
             assertIs<JsArray>(a)
             assertEquals(1, a.size)
             assertEquals(JsNumber(context, 1), a.getValue(0))
-            eventLoop.runAndWaitForCompletion()
+            eventLoop.runAndComplete()
             assertEquals(2, a.size)
             assertEquals(JsNumber(context, 5), a.getValue(1))
         }
@@ -639,4 +663,71 @@ class JsContextTest {
         assertFalse(a.isClosed)
         a.getValue("a")
     }
+
+    @Test
+    fun callsOnCompletionListenerWhenEventLoopHasRunAndCompleted() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+            var isCancelled: Boolean? = null
+            var e: Throwable? = null
+            eventLoop.onCompletion = { cancelled, exception ->
+                isCancelled = cancelled
+                e = exception
+            }
+            eventLoop.runAndComplete()
+            assertEquals(false, isCancelled)
+            assertNull(e)
+        }
+
+    @Test
+    fun callsOnCompletionListenerWhenEventLoopIsCancelled() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+            var isCancelled: Boolean? = null
+            var e: Throwable? = null
+            eventLoop.onCompletion = { cancelled, exception ->
+                isCancelled = cancelled
+                e = exception
+            }
+            eventLoop.cancel()
+            assertEquals(true, isCancelled)
+            assertNull(e)
+        }
+
+    @Test
+    fun callsOnCompletionListenerWhenEventLoopIsCancelledBecauseOfException() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+            var isCancelled: Boolean? = null
+            var e: Throwable? = null
+            eventLoop.onCompletion = { cancelled, exception ->
+                isCancelled = cancelled
+                e = exception
+            }
+            var exception: Throwable? = null
+            val siblingJob =
+                eventLoop.launch {
+                    awaitCancellation()
+                }
+            assertTrue(siblingJob.isActive)
+            val job =
+                eventLoop.launch {
+                    exception = RuntimeException()
+                    throw exception
+                }
+            job.join()
+            assertEquals(true, isCancelled)
+            assertEquals(exception, e)
+            assertTrue(job.isCancelled)
+            assertTrue(siblingJob.isCancelled)
+        }
 }

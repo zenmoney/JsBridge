@@ -4,9 +4,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
 
 expect sealed interface JsPromise : JsObject
 
@@ -80,7 +80,7 @@ internal suspend fun JsValue.awaitInScope(scope: JsScope): JsValue {
         while (true) {
             val then = (value as? JsObject)?.get("then") as? JsFunction ?: break
             value =
-                suspendCancellableCoroutine { cont ->
+                suspendCoroutine { cont ->
                     then(
                         JsFunction {
                             cont.resume(it.firstOrNull()?.escape()?.also { value -> scope.autoClose(value) } ?: context.UNDEFINED)
