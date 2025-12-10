@@ -268,24 +268,72 @@ actual class JsContext : AutoCloseable {
 
     internal fun createValue(value: Any?): JsValue =
         when (value) {
-            null -> NULL
-            is JsValue -> value
-            is Boolean -> JsBooleanImpl(this, JSValue.valueWithBool(value, jsContext)!!)
-            is Int -> JsNumberImpl(this, JSValue.valueWithInt32(value, jsContext)!!)
-            is Number -> JsNumberImpl(this, JSValue.valueWithDouble(value.toDouble(), jsContext)!!)
-            is String -> JsStringImpl(this, JSValue.valueWithObject(value, jsContext)!!)
-            is ByteArray -> createUint8Array(value)
-            is JSValue ->
+            null -> {
+                NULL
+            }
+
+            is JsValue -> {
+                value
+            }
+
+            is Boolean -> {
+                JsBooleanImpl(this, JSValue.valueWithBool(value, jsContext)!!)
+            }
+
+            is Int -> {
+                JsNumberImpl(this, JSValue.valueWithInt32(value, jsContext)!!)
+            }
+
+            is Number -> {
+                JsNumberImpl(this, JSValue.valueWithDouble(value.toDouble(), jsContext)!!)
+            }
+
+            is String -> {
+                JsStringImpl(this, JSValue.valueWithObject(value, jsContext)!!)
+            }
+
+            is ByteArray -> {
+                createUint8Array(value)
+            }
+
+            is JSValue -> {
                 when {
-                    value.context != jsContext -> throw IllegalArgumentException("value runtime must match the JsContext runtime")
-                    value.isNull -> NULL
-                    value.isUndefined -> UNDEFINED
-                    value.isBoolean -> JsBooleanImpl(this, value)
-                    value.isNumber -> JsNumberImpl(this, value)
-                    value.isString -> JsStringImpl(this, value)
-                    value.isEqualToObject((globalThis as JsValueImpl).jsValue) -> globalThis
-                    value.isDate -> JsDateImpl(this, value)
-                    value.isArray -> JsArrayImpl(this, value)
+                    value.context != jsContext -> {
+                        throw IllegalArgumentException("value runtime must match the JsContext runtime")
+                    }
+
+                    value.isNull -> {
+                        NULL
+                    }
+
+                    value.isUndefined -> {
+                        UNDEFINED
+                    }
+
+                    value.isBoolean -> {
+                        JsBooleanImpl(this, value)
+                    }
+
+                    value.isNumber -> {
+                        JsNumberImpl(this, value)
+                    }
+
+                    value.isString -> {
+                        JsStringImpl(this, value)
+                    }
+
+                    value.isEqualToObject((globalThis as JsValueImpl).jsValue) -> {
+                        globalThis
+                    }
+
+                    value.isDate -> {
+                        JsDateImpl(this, value)
+                    }
+
+                    value.isArray -> {
+                        JsArrayImpl(this, value)
+                    }
+
                     else -> {
                         val type = jsTypeOf.checkNotNull().callWithArguments(listOf(value))!!.toString()
                         when {
@@ -300,7 +348,11 @@ actual class JsContext : AutoCloseable {
                         }
                     }
                 }
-            else -> TODO()
+            }
+
+            else -> {
+                TODO()
+            }
         }.also { registerValue(it) }
 
     internal actual fun <T : JsValue> createValueAlias(value: T): T {

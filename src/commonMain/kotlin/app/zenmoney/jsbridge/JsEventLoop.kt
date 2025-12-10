@@ -67,6 +67,7 @@ class JsEventLoop(
                         -> JsObject().also { process -> context.globalThis["process"] = process }
 
                         is JsObject -> it
+
                         else -> null
                     }
                 }?.let { process ->

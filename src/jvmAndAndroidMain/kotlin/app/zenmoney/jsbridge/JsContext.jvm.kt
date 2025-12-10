@@ -293,44 +293,112 @@ actual class JsContext : AutoCloseable {
             }
         }
         return when (value) {
-            is Boolean -> JsBooleanImpl(this, v8Runtime.createV8ValueBoolean(value))
-            is Int -> JsNumberImpl(this, v8Runtime.createV8ValueInteger(value))
-            is Long -> JsNumberImpl(this, v8Runtime.createV8ValueLong(value))
-            is Number -> JsNumberImpl(this, v8Runtime.createV8ValueDouble(value.toDouble()))
-            is String -> JsStringImpl(this, v8Runtime.createV8ValueString(value))
-            is ByteArray ->
+            is Boolean -> {
+                JsBooleanImpl(this, v8Runtime.createV8ValueBoolean(value))
+            }
+
+            is Int -> {
+                JsNumberImpl(this, v8Runtime.createV8ValueInteger(value))
+            }
+
+            is Long -> {
+                JsNumberImpl(this, v8Runtime.createV8ValueLong(value))
+            }
+
+            is Number -> {
+                JsNumberImpl(this, v8Runtime.createV8ValueDouble(value.toDouble()))
+            }
+
+            is String -> {
+                JsStringImpl(this, v8Runtime.createV8ValueString(value))
+            }
+
+            is ByteArray -> {
                 JsUint8ArrayImpl(
                     this,
                     v8Runtime.createV8ValueTypedArray(V8ValueReferenceType.Uint8Array, value.size).apply { fromBytes(value) },
                 )
-            is V8ValueBoolean -> JsBooleanImpl(this, value)
-            is V8ValueBooleanObject -> JsBooleanObjectImpl(this, value)
-            is V8ValueBigInteger -> JsNumberImpl(this, value)
-            is V8ValueInteger -> JsNumberImpl(this, value)
-            is V8ValueIntegerObject -> JsNumberObjectImpl(this, value)
-            is V8ValueLong -> JsNumberImpl(this, value)
-            is V8ValueLongObject -> JsNumberObjectImpl(this, value)
-            is V8ValueDouble -> JsNumberImpl(this, value)
-            is V8ValueDoubleObject -> JsNumberObjectImpl(this, value)
-            is V8ValueString -> JsStringImpl(this, value)
-            is V8ValueStringObject -> JsStringObjectImpl(this, value)
-            is V8ValueZonedDateTime -> JsDateImpl(this, value)
-            is V8ValueTypedArray ->
+            }
+
+            is V8ValueBoolean -> {
+                JsBooleanImpl(this, value)
+            }
+
+            is V8ValueBooleanObject -> {
+                JsBooleanObjectImpl(this, value)
+            }
+
+            is V8ValueBigInteger -> {
+                JsNumberImpl(this, value)
+            }
+
+            is V8ValueInteger -> {
+                JsNumberImpl(this, value)
+            }
+
+            is V8ValueIntegerObject -> {
+                JsNumberObjectImpl(this, value)
+            }
+
+            is V8ValueLong -> {
+                JsNumberImpl(this, value)
+            }
+
+            is V8ValueLongObject -> {
+                JsNumberObjectImpl(this, value)
+            }
+
+            is V8ValueDouble -> {
+                JsNumberImpl(this, value)
+            }
+
+            is V8ValueDoubleObject -> {
+                JsNumberObjectImpl(this, value)
+            }
+
+            is V8ValueString -> {
+                JsStringImpl(this, value)
+            }
+
+            is V8ValueStringObject -> {
+                JsStringObjectImpl(this, value)
+            }
+
+            is V8ValueZonedDateTime -> {
+                JsDateImpl(this, value)
+            }
+
+            is V8ValueTypedArray -> {
                 if (value.type == V8ValueReferenceType.Uint8Array) {
                     JsUint8ArrayImpl(this, value)
                 } else {
                     JsObjectImpl(this, value)
                 }
-            is V8ValueArray -> JsArrayImpl(this, value)
-            is V8ValueFunction -> JsFunctionImpl(this, value)
-            is V8ValuePromise -> JsPromiseImpl(this, value)
-            is V8ValueObject ->
+            }
+
+            is V8ValueArray -> {
+                JsArrayImpl(this, value)
+            }
+
+            is V8ValueFunction -> {
+                JsFunctionImpl(this, value)
+            }
+
+            is V8ValuePromise -> {
+                JsPromiseImpl(this, value)
+            }
+
+            is V8ValueObject -> {
                 if (value.has("then") && value.get<V8Value>("then").use { it is V8ValueFunction }) {
                     JsPromiseImpl(this, value)
                 } else {
                     JsObjectImpl(this, value)
                 }
-            else -> TODO()
+            }
+
+            else -> {
+                TODO()
+            }
         }.also { registerValue(it) }
     }
 

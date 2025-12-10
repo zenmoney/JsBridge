@@ -329,9 +329,18 @@ actual class JsContext : AutoCloseable {
             }
         }
         return when (value) {
-            is Boolean -> JsBooleanImpl(this, value)
-            is Number -> JsNumberImpl(this, value.toDouble())
-            is String -> JsStringImpl(this, value)
+            is Boolean -> {
+                JsBooleanImpl(this, value)
+            }
+
+            is Number -> {
+                JsNumberImpl(this, value.toDouble())
+            }
+
+            is String -> {
+                JsStringImpl(this, value)
+            }
+
             is ByteArray -> {
                 val buffer = V8ArrayBuffer(v8Runtime, ByteBuffer.allocateDirect(value.size).apply { put(value) })
                 JsUint8ArrayImpl(
@@ -345,14 +354,23 @@ actual class JsContext : AutoCloseable {
                     ),
                 ).also { buffer.closeQuietly() }
             }
-            is V8TypedArray ->
+
+            is V8TypedArray -> {
                 if (value.type == V8TypedArray.UNSIGNED_INT_8_ARRAY) {
                     JsUint8ArrayImpl(this, value)
                 } else {
                     JsObjectImpl(this, value)
                 }
-            is V8Array -> JsArrayImpl(this, value)
-            is V8Function -> JsFunctionImpl(this, value)
+            }
+
+            is V8Array -> {
+                JsArrayImpl(this, value)
+            }
+
+            is V8Function -> {
+                JsFunctionImpl(this, value)
+            }
+
             is V8Object -> {
                 val type = jsTypeOf.call(value, null) as String
                 when (type) {
@@ -364,7 +382,10 @@ actual class JsContext : AutoCloseable {
                     else -> JsObjectImpl(this, value)
                 }
             }
-            else -> throw IllegalArgumentException("unexpected value ${value::class} $value")
+
+            else -> {
+                throw IllegalArgumentException("unexpected value ${value::class} $value")
+            }
         }.also { registerValue(it) }
     }
 
