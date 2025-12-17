@@ -225,17 +225,24 @@ actual class JsContext : AutoCloseable {
     internal actual fun createException(error: JsValue): JsException {
         val message =
             if (error is JsString) {
-                "Error: $error"
-            } else {
                 error.toString()
+            } else {
+                (error as? JsObject)
+                    ?.getValue("message")
+                    ?.use { it.takeIf { it !is JsUndefined }?.toString() }
+                    ?: error.toString()
             }
         return JsException(
             message,
             lastException
                 ?.takeIf {
-                    "Error: ${it.message}" == message || message == "Error: Unhandled Java Exception"
+                    "${it.message}" == message || message == "Unhandled Java Exception"
                 }?.also { lastException = null },
             (if (error is JsObject) error.toPlainMap() else null) ?: emptyMap(),
+            (error as? JsObject)
+                ?.getValue("name")
+                ?.use { (it as? JsString)?.toString() }
+                ?: if (error is JsString) "Error" else "",
         )
     }
 

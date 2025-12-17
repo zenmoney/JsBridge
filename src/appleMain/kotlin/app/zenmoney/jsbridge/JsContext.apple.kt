@@ -161,11 +161,30 @@ actual class JsContext : AutoCloseable {
 
     private fun createException(error: JSValue): JsException =
         JsException(
-            error.toString_() ?: error.toString(),
+            if (error.isString) {
+                error.toString_() ?: error.toString()
+            } else {
+                (
+                    error
+                        .takeIf { it.isObject }
+                        ?.objectForKeyedSubscript("message")
+                        ?.takeIf { it.isString }
+                        ?: error
+                ).let {
+                    it.toString_() ?: it.toString()
+                }
+            },
             lastException
                 ?.takeIf { error.isObject && error.objectForKeyedSubscript("appZenmoneyException")?.toInt32() == it.hashCode() }
                 ?.also { lastException = null },
             (if (error.isObject) error.toDictionary()?.mapKeys { it.key.toString() } else null) ?: emptyMap(),
+            error
+                .takeIf { it.isObject }
+                ?.objectForKeyedSubscript("name")
+                ?.takeIf { it.isString }
+                ?.let {
+                    it.toString_() ?: it.toString()
+                } ?: "",
         )
 
     private fun createJsError(exception: Throwable): JSValue {

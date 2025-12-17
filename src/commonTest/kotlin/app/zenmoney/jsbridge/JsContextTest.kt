@@ -58,7 +58,8 @@ class JsContextTest {
             )
             assertTrue(false)
         } catch (e: JsException) {
-            assertEquals("Error: my error message", e.message)
+            assertEquals("Error", e.name)
+            assertEquals("my error message", e.message)
             assertEquals(
                 mapOf("a" to 1.4, "b" to "2", "c" to mapOf("c" to listOf("ccc"))),
                 e.data,
@@ -79,7 +80,8 @@ class JsContextTest {
             context.evaluateScript("f(1, 2)")
             assertTrue(false)
         } catch (e: JsException) {
-            assertEquals("Error: my error message", e.message)
+            assertEquals("Error", e.name)
+            assertEquals("my error message", e.message)
             assertEquals(exception, e.cause)
             assertEquals(
                 emptyMap(),
@@ -95,7 +97,8 @@ class JsContextTest {
             )
             assertTrue(false)
         } catch (e: JsException) {
-            assertEquals("Error: my error message", e.message)
+            assertEquals("Error", e.name)
+            assertEquals("my error message", e.message)
             assertEquals(exception, e.cause)
             assertEquals(
                 emptyMap(),
@@ -118,6 +121,7 @@ class JsContextTest {
             context.evaluateScript("f(1, 2)")
             assertTrue(false)
         } catch (e: JsException) {
+            assertEquals("Error", e.name)
             assertEquals(exception, e.cause)
             assertEquals(
                 emptyMap(),
@@ -136,10 +140,9 @@ class JsContextTest {
             }
         context.globalThis["f"] = f
         val error = context.evaluateScript("try { f(1, 2) } catch (e) { e }")
-        assertIs<JsObject>(error)
-        assertEquals(JsString(context, "my error message"), error.getValue("message"))
         val e = JsException(error)
-        assertEquals("Error: my error message", e.message)
+        assertEquals("Error", e.name)
+        assertEquals("my error message", e.message)
         assertEquals(exception, e.cause)
         assertEquals(
             emptyMap(),
@@ -449,7 +452,8 @@ class JsContextTest {
             assertTrue(false)
         } catch (e: JsException) {
             assertEquals(JsNumber(context, 1), context.evaluateScript("callCount"))
-            assertEquals("Error: Wrong this", e.message)
+            assertEquals("Error", e.name)
+            assertEquals("Wrong this", e.message)
         }
         f.call(
             listOf(
@@ -506,7 +510,8 @@ class JsContextTest {
         assertIs<JsObject>(error)
         assertEquals(JsBoolean(context, true), context.evaluateScript("error instanceof Error"))
         val e = JsException(error)
-        assertEquals("Error: my error message", e.message)
+        assertEquals("Error", e.name)
+        assertEquals("my error message", e.message)
         assertEquals(exception, e.cause)
         assertEquals(
             emptyMap(),
@@ -560,7 +565,8 @@ class JsContextTest {
                 jsScoped(context) { result.await().escape() }
                 assertTrue(false)
             } catch (e: JsException) {
-                assertEquals("Error: my error message", e.message)
+                assertEquals("Error", e.name)
+                assertEquals("my error message", e.message)
                 assertEquals(
                     mapOf("a" to 1.4, "b" to "2", "c" to mapOf("c" to listOf("ccc"))),
                     e.data,

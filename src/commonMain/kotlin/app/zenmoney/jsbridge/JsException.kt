@@ -4,6 +4,7 @@ class JsException(
     message: String,
     cause: Throwable? = null,
     val data: Map<String, Any?> = emptyMap(),
+    val name: String = "",
 ) : Exception(message, cause)
 
 fun JsException(value: JsValue): JsException = value.context.createException(value)

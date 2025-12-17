@@ -181,14 +181,26 @@ actual class JsContext : AutoCloseable {
     internal actual fun createDate(millis: Long): JsDate = createValue(v8Runtime.createV8ValueZonedDateTime(millis)) as JsDate
 
     internal actual fun createException(error: JsValue): JsException {
-        val message = error.toString()
+        val message =
+            if (error is JsString) {
+                error.toString()
+            } else {
+                (error as? JsObject)
+                    ?.getValue("message")
+                    ?.use { it.takeIf { it !is JsUndefined }?.toString() }
+                    ?: error.toString()
+            }
         return JsException(
             message,
             lastException
                 ?.takeIf {
-                    "Error: ${it.message}" == message || message == "Error: Uncaught JavaError in function callback"
+                    "${it.message}" == message || message == "Uncaught JavaError in function callback"
                 }?.also { lastException = null },
             (if (error is JsObject) error.toPlainMap() else null) ?: emptyMap(),
+            (error as? JsObject)
+                ?.getValue("name")
+                ?.use { (it as? JsString)?.toString() }
+                ?: "",
         )
     }
 
