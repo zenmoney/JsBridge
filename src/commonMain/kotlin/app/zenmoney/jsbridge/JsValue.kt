@@ -1,5 +1,7 @@
 package app.zenmoney.jsbridge
 
+import kotlin.contracts.contract
+
 expect sealed interface JsValue : AutoCloseable {
     val context: JsContext
 }
@@ -65,4 +67,107 @@ internal fun JsValue.toBasicPlainValue(): Any? {
     }
 }
 
-fun JsValue.isNullOrUndefined(): Boolean = this == context.NULL || this == context.UNDEFINED
+fun JsValue?.isNullOrUndefined(): Boolean {
+    contract {
+        returns(false) implies (this@isNullOrUndefined != null)
+    }
+    return this == null || this == context.NULL || this == context.UNDEFINED
+}
+
+val JsValue.boolean: Boolean
+    get() =
+        booleanOrNull
+            ?: throw IllegalStateException("$this does not represent a Boolean")
+
+val JsValue.booleanOrNull: Boolean?
+    get() = (this as? JsBoolean)?.toBoolean()
+
+val JsValue.double: Double
+    get() =
+        doubleOrNull
+            ?: throw NumberFormatException("$this is not a Double")
+
+val JsValue.doubleOrNull: Double?
+    get() = (this as? JsNumber)?.toNumber()?.toDouble()
+
+val JsValue.float: Float
+    get() =
+        floatOrNull
+            ?: throw NumberFormatException("$this is not a Float")
+
+val JsValue.floatOrNull: Float?
+    get() = (this as? JsNumber)?.toNumber()?.toFloat()
+
+val JsValue.int: Int
+    get() =
+        intOrNull
+            ?: throw NumberFormatException("$this is not an Int")
+
+val JsValue.intOrNull: Int?
+    get() =
+        when (val n = (this as? JsNumber)?.toNumber()) {
+            null -> {
+                null
+            }
+
+            is Int -> {
+                n
+            }
+
+            is Byte,
+            is Short,
+            -> {
+                n.toInt()
+            }
+
+            else -> {
+                when (val l = longOrNull) {
+                    null -> null
+                    in Int.MIN_VALUE..Int.MAX_VALUE -> l.toInt()
+                    else -> null
+                }
+            }
+        }
+
+val JsValue.long: Long
+    get() =
+        longOrNull
+            ?: throw NumberFormatException("$this is not a Long")
+
+val JsValue.longOrNull: Long?
+    get() =
+        when (val n = (this as? JsNumber)?.toNumber()) {
+            null -> {
+                null
+            }
+
+            is Long -> {
+                n
+            }
+
+            is Byte,
+            is Int,
+            is Short,
+            -> {
+                n.toLong()
+            }
+
+            is Float -> {
+                val l = n.toLong()
+                if (l.toFloat() == n) l else null
+            }
+
+            else -> {
+                val d = (n as? Double) ?: n.toDouble()
+                val l = n.toLong()
+                if (l.toDouble() == d) l else null
+            }
+        }
+
+val JsValue.string: String
+    get() =
+        stringOrNull
+            ?: throw IllegalStateException("$this is not a String")
+
+val JsValue.stringOrNull: String?
+    get() = (this as? JsString)?.toString()

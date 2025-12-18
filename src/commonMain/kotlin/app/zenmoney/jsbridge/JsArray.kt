@@ -25,11 +25,9 @@ inline fun <R, C : MutableCollection<in R>> JsArray.mapTo(
         return destination
     }
 
-fun <T> JsArray.map(transform: JsScope.(JsValue) -> T): List<T> = mapTo(ArrayList(size), transform)
+inline fun <T> JsArray.map(transform: JsScope.(JsValue) -> T): List<T> = mapTo(ArrayList(size), transform)
 
-fun JsArray.toList(): List<JsValue> = map { it.escape() }
-
-fun JsArray.forEach(action: JsScope.(JsValue) -> Unit) =
+inline fun JsArray.forEach(action: JsScope.(JsValue) -> Unit) =
     jsScoped(context) {
         val n = size
         for (i in 0 until n) {

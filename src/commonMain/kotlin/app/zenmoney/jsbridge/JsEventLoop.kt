@@ -15,9 +15,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
-import kotlin.coroutines.suspendCoroutine
 
 class JsEventLoop(
     context: CoroutineContext,
@@ -170,20 +167,6 @@ class JsEventLoop(
 
     fun cancel(exception: Throwable? = null) {
         cancel(exception?.message ?: "", exception)
-    }
-
-    fun launchWithCallback(block: (callback: (exception: Throwable?) -> Unit) -> Unit) {
-        launch {
-            suspendCoroutine { cont ->
-                block { exception ->
-                    if (exception != null) {
-                        cont.resumeWithException(exception)
-                    } else {
-                        cont.resume(Unit)
-                    }
-                }
-            }
-        }
     }
 
     private fun JsScope.nextTick(args: List<JsValue>) {
