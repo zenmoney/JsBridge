@@ -25,3 +25,51 @@ fun JsObject.toPlainMap(): Map<String, Any?> =
     keys.associateWith { key ->
         getValue(key).use { it.toPlainValue() }
     }
+
+fun JsObject.defineProperty(
+    key: String,
+    value: JsValue? = null,
+    get: JsFunction? = null,
+    set: JsFunction? = null,
+    configurable: Boolean = false,
+    enumerable: Boolean = false,
+    writable: Boolean = false,
+) {
+    JsString(context, key).use { key ->
+        defineProperty(
+            key,
+            value,
+            get,
+            set,
+            configurable,
+            enumerable,
+            writable,
+        )
+    }
+}
+
+fun JsObject.defineProperty(
+    key: JsValue,
+    value: JsValue? = null,
+    get: JsFunction? = null,
+    set: JsFunction? = null,
+    configurable: Boolean = false,
+    enumerable: Boolean = false,
+    writable: Boolean = false,
+) {
+    jsScoped(context) {
+        val defineProperty = eval("Object.defineProperty") as JsFunction
+        defineProperty(
+            this@defineProperty,
+            key,
+            JsObject().apply {
+                value?.let { this["value"] = value }
+                get?.let { this["get"] = get }
+                set?.let { this["set"] = set }
+                this["configurable"] = JsBoolean(configurable)
+                this["enumerable"] = JsBoolean(enumerable)
+                this["writable"] = JsBoolean(writable)
+            },
+        )
+    }
+}
