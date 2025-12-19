@@ -31,9 +31,9 @@ fun JsObject.defineProperty(
     value: JsValue? = null,
     get: JsFunction? = null,
     set: JsFunction? = null,
-    configurable: Boolean = false,
-    enumerable: Boolean = false,
-    writable: Boolean = false,
+    configurable: Boolean? = null,
+    enumerable: Boolean? = null,
+    writable: Boolean? = null,
 ) {
     JsString(context, key).use { key ->
         defineProperty(
@@ -53,9 +53,9 @@ fun JsObject.defineProperty(
     value: JsValue? = null,
     get: JsFunction? = null,
     set: JsFunction? = null,
-    configurable: Boolean = false,
-    enumerable: Boolean = false,
-    writable: Boolean = false,
+    configurable: Boolean? = null,
+    enumerable: Boolean? = null,
+    writable: Boolean? = null,
 ) {
     jsScoped(context) {
         val defineProperty = eval("Object.defineProperty") as JsFunction
@@ -66,9 +66,9 @@ fun JsObject.defineProperty(
                 value?.let { this["value"] = value }
                 get?.let { this["get"] = get }
                 set?.let { this["set"] = set }
-                this["configurable"] = JsBoolean(configurable)
-                this["enumerable"] = JsBoolean(enumerable)
-                this["writable"] = JsBoolean(writable)
+                configurable?.let { this["configurable"] = JsBoolean(configurable) }
+                enumerable?.let { this["enumerable"] = JsBoolean(enumerable) }
+                writable?.let { this["writable"] = JsBoolean(writable) }
             },
         )
     }
