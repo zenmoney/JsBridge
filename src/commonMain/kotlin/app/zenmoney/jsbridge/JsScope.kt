@@ -131,3 +131,24 @@ private fun Any.asScopeItem(): JsScopeItem =
 sealed class JsScopeItem {
     internal var indexInScope: Int = -1
 }
+
+fun JsScope.evalBlockScoped(
+    script: String,
+    vararg bindings: Pair<String, JsValue>,
+): JsValue {
+    val s = StringBuilder()
+    s.append("{\n")
+    for (placeholder in bindings) {
+        val globalVarName = "__appZenmoneyEval${placeholder.first}"
+        context.globalThis[globalVarName] = placeholder.second
+        s.append(
+            """
+            const ${placeholder.first} = $globalVarName;
+            delete globalThis.$globalVarName;
+            """.trimIndent(),
+        )
+    }
+    s.append(script)
+    s.append("\n}")
+    return eval(s.toString())
+}

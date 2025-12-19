@@ -736,4 +736,23 @@ class JsContextTest {
             assertTrue(job.isCancelled)
             assertTrue(siblingJob.isCancelled)
         }
+
+    @Test
+    fun evalBlockScopedCreatesValidBindings() {
+        jsScoped(context) {
+            val a = JsObject()
+            val obj =
+                JsObject().apply {
+                    this["a"] = a
+                }
+            assertEquals(JsString("undefined"), eval("typeof obj"))
+            val result =
+                evalBlockScoped(
+                    "obj['a']",
+                    "obj" to obj,
+                )
+            assertEquals(a, result)
+            assertEquals(JsString("undefined"), eval("typeof obj"))
+        }
+    }
 }
