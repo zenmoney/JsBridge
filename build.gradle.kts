@@ -57,18 +57,18 @@ kotlin {
         val jvmAndAndroidMain by creating {
             dependsOn(commonMain)
             dependencies {
-                compileOnly("com.caoccao.javet:javet:4.1.7")
+                compileOnly("com.caoccao.javet:javet:5.0.2")
             }
         }
         val jvmMain by getting {
             dependsOn(jvmAndAndroidMain)
             dependencies {
-                implementation("com.caoccao.javet:javet:4.1.7")
-                implementation("com.caoccao.javet:javet-v8-linux-arm64:4.1.7")
-                implementation("com.caoccao.javet:javet-v8-linux-x86_64:4.1.7")
-                implementation("com.caoccao.javet:javet-v8-macos-arm64:4.1.7")
-                implementation("com.caoccao.javet:javet-v8-macos-x86_64:4.1.7")
-                implementation("com.caoccao.javet:javet-v8-windows-x86_64:4.1.7")
+                implementation("com.caoccao.javet:javet:5.0.2")
+                implementation("com.caoccao.javet:javet-v8-linux-arm64:5.0.2")
+                implementation("com.caoccao.javet:javet-v8-linux-x86_64:5.0.2")
+                implementation("com.caoccao.javet:javet-v8-macos-arm64:5.0.2")
+                implementation("com.caoccao.javet:javet-v8-macos-x86_64:5.0.2")
+                implementation("com.caoccao.javet:javet-v8-windows-x86_64:5.0.2")
             }
         }
         val androidMain by getting {
