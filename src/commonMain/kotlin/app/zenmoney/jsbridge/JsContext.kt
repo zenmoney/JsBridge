@@ -86,3 +86,6 @@ internal class JsContextCore : AutoCloseable {
         eventLoop = null
     }
 }
+
+val JsContext.isClosed: Boolean
+    get() = core._scope == null

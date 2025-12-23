@@ -17,7 +17,7 @@ open class JsScope internal constructor(
 
     fun <T : JsValue> autoClose(value: T) {
         require(context === value.context) { "Can't autoclose value from another context" }
-        if (isSingleton(value)) return
+        if (value.isSingleton()) return
         context.core.scope.tryEscape(value)
         require(tryAutoClose(value)) { "Can't autoclose value from another scope" }
     }
@@ -26,7 +26,7 @@ open class JsScope internal constructor(
 
     fun <T : JsValue> escape(value: T) {
         require(context === value.context) { "Can't escape value from another context" }
-        if (isSingleton(value)) return
+        if (value.isSingleton()) return
         tryEscape(value)
         require(context.core.scope.tryAutoClose(value)) { "Can't escape value from another scope" }
     }
@@ -80,8 +80,6 @@ open class JsScope internal constructor(
         parent?.also { parent = null }?.tryEscape(this)
         _context = null
     }
-
-    private fun isSingleton(value: JsValue): Boolean = value === context.globalThis || value === context.NULL || value === context.UNDEFINED
 
     internal fun tryAutoClose(value: AutoCloseable): Boolean {
         val values = values ?: return false

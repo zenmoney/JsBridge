@@ -755,4 +755,18 @@ class JsContextTest {
             assertEquals(JsString("undefined"), eval("typeof obj"))
         }
     }
+
+    @Test
+    fun doesNotCloseSingletonValuesUntilContextIsClosed() {
+        listOf(
+            context.NULL,
+            context.UNDEFINED,
+            context.globalThis,
+        ).forEach {
+            if (it.isSingleton()) {
+                it.close()
+                assertFalse(it.isClosed)
+            }
+        }
+    }
 }

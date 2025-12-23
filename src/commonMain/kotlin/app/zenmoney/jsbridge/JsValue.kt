@@ -16,10 +16,19 @@ internal class JsValueCore(
     val context: JsContext
         get() = checkNotNull(_context) { "JsValue is already closed" }
 
-    fun close(value: JsValue) {
+    fun close(value: JsValue): Boolean {
+        if (value.isSingleton() && _context?.isClosed == false) {
+            return false
+        }
         _context?.closeValue(value)
         _context = null
+        return true
     }
+}
+
+internal fun JsValue.isSingleton(): Boolean {
+    val context = core._context ?: return false
+    return this === context.globalThis || this === context.NULL || this === context.UNDEFINED
 }
 
 @Suppress("FunctionName")

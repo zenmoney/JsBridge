@@ -23,8 +23,9 @@ internal open class JsValueImpl(
         get() = _core.context
 
     override fun close() {
-        _core.close(this)
-        _jsValue = null
+        if (_core.close(this)) {
+            _jsValue = null
+        }
     }
 
     override fun toString(): String = jsValue.toString_() ?: jsValue.toString()
