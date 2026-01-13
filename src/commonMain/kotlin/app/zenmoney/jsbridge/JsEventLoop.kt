@@ -234,8 +234,6 @@ class JsEventLoop(
                 while (true) {
                     delay(delayMs)
                     jsScoped(callback.context) {
-                        autoClose(callback)
-                        autoClose(args)
                         callback(args)
                     }
                     tick()
