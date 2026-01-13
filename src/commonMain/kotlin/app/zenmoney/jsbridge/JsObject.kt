@@ -73,3 +73,16 @@ fun JsObject.defineProperty(
         )
     }
 }
+
+inline fun <reified T> JsObject.getTag(key: String): T? = _getTag(key) as? T
+
+@Suppress("FunctionName")
+@PublishedApi
+internal fun JsObject._getTag(key: String): Any? = core.context.core.getTag(this, key)
+
+fun JsObject.setTag(
+    key: String,
+    value: Any,
+) = core.context.core.setTag(this, key, value)
+
+fun JsObject.removeTag(key: String) = core.context.core.removeTag(this, key)

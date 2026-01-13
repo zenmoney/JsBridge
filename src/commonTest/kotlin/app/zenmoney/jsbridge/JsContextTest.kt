@@ -1,5 +1,6 @@
 package app.zenmoney.jsbridge
 
+import app.zenmoney.jsbridge.getTag
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -767,6 +768,23 @@ class JsContextTest {
                 it.close()
                 assertFalse(it.isClosed)
             }
+        }
+    }
+
+    @Test
+    fun setsNativeObjectAsTag() {
+        jsScoped(context) {
+            val a1 = JsObject()
+            val a2 = JsValueAlias(a1)
+            assertNull(a1.getTag("nativeObject"))
+            assertNull(a2.getTag("nativeObject"))
+            val nativeObject = Any()
+            a1.setTag("nativeObject", nativeObject)
+            assertEquals(nativeObject, a1.getTag("nativeObject"))
+            assertEquals(nativeObject, a2.getTag("nativeObject"))
+            a2.removeTag("nativeObject")
+            assertNull(a1.getTag("nativeObject"))
+            assertNull(a2.getTag("nativeObject"))
         }
     }
 }

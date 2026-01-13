@@ -69,6 +69,10 @@ internal class JsContextCore : AutoCloseable {
     var scopeValuesPool: MutableList<ArrayList<AutoCloseable>>? = arrayListOf()
     var eventLoop: JsEventLoop? = null
 
+    private var tag: Any? = null
+    private var tagReader: JsFunction? = null
+    private var tagSetter: JsFunction? = null
+
     val scope: JsScope
         get() = checkNotNull(_scope) { "JsContext is already closed" }
 
@@ -80,10 +84,71 @@ internal class JsContextCore : AutoCloseable {
         _scope?.tryEscape(value)
     }
 
+    fun getTag(
+        jsObject: JsObject,
+        key: String,
+    ): Any? =
+        jsScoped(jsObject.context) {
+            initTagReaderAndSetter(context)
+            tagReader!!(jsObject, JsString(key))
+            tag?.also { tag = null }
+        }
+
+    fun setTag(
+        jsObject: JsObject,
+        key: String,
+        value: Any,
+    ) = jsScoped(jsObject.context) {
+        val read =
+            JsFunction {
+                context.core.tag = value
+                context.UNDEFINED
+            }
+        initTagReaderAndSetter(context)
+        tagSetter!!(jsObject, JsString(key), read)
+    }
+
+    fun removeTag(
+        jsObject: JsObject,
+        key: String,
+    ) {
+        jsScoped(jsObject.context) {
+            initTagReaderAndSetter(context)
+            tagSetter!!(jsObject, JsString(key), context.UNDEFINED)
+        }
+    }
+
+    private fun initTagReaderAndSetter(context: JsContext) {
+        if (tagReader == null) {
+            tagReader =
+                context.evaluateScript(
+                    """
+                    (function (object, key) {
+                        const getter = object[Symbol.for('appZenmoneyTag' + key)];
+                        if (getter) {
+                            getter();
+                        }
+                    })
+                    """.trimIndent(),
+                ) as JsFunction
+            tagSetter =
+                context.evaluateScript(
+                    """
+                    (function (object, key, getter) {
+                        object[Symbol.for('appZenmoneyTag' + key)] = getter;
+                    })
+                    """.trimIndent(),
+                ) as JsFunction
+        }
+    }
+
     override fun close() {
         scopeValuesPool = null
         _scope.also { _scope = null }?.close()
         eventLoop = null
+        tag = null
+        tagReader = null
+        tagSetter = null
     }
 }
 
