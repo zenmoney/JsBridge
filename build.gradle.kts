@@ -3,7 +3,7 @@ import java.util.Properties
 plugins {
     kotlin("multiplatform")
     kotlin("plugin.serialization")
-    id("com.android.library")
+    id("com.android.kotlin.multiplatform.library")
     id("org.jlleitschuh.gradle.ktlint")
     id("maven-publish")
     id("signing")
@@ -25,11 +25,17 @@ ktlint {
 kotlin {
     jvm()
     jvmToolchain(17)
-    androidTarget {
-        publishLibraryVariants("release", "debug")
+
+    android {
+        namespace = "app.zenmoney.jsbridge"
+        minSdk = 24
+        compileSdk = 35
+        withDeviceTest {
+            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        }
     }
+
     listOf(
-        iosX64(),
         iosArm64(),
         iosSimulatorArm64(),
     ).forEach { iosTarget ->
@@ -37,7 +43,6 @@ kotlin {
             baseName = "JsBridge"
         }
     }
-    macosX64()
     macosArm64()
 
     applyDefaultHierarchyTemplate()
@@ -45,13 +50,13 @@ kotlin {
         val commonMain by getting {
             dependencies {
                 implementation("androidx.collection:collection:1.5.0")
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
             }
         }
         val commonTest by getting {
             dependencies {
                 implementation(kotlin("test"))
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
             }
         }
         val jvmAndAndroidMain by creating {
@@ -63,12 +68,11 @@ kotlin {
         val jvmMain by getting {
             dependsOn(jvmAndAndroidMain)
             dependencies {
-                implementation("com.caoccao.javet:javet:5.0.2")
-                implementation("com.caoccao.javet:javet-v8-linux-arm64:5.0.2")
-                implementation("com.caoccao.javet:javet-v8-linux-x86_64:5.0.2")
-                implementation("com.caoccao.javet:javet-v8-macos-arm64:5.0.2")
-                implementation("com.caoccao.javet:javet-v8-macos-x86_64:5.0.2")
-                implementation("com.caoccao.javet:javet-v8-windows-x86_64:5.0.2")
+                implementation("com.caoccao.javet:javet:5.0.8")
+                implementation("com.caoccao.javet:javet-v8-linux-arm64:5.0.8")
+                implementation("com.caoccao.javet:javet-v8-linux-x86_64:5.0.8")
+                implementation("com.caoccao.javet:javet-v8-macos-arm64:5.0.8")
+                implementation("com.caoccao.javet:javet-v8-windows-x86_64:5.0.8")
             }
         }
         val androidMain by getting {
@@ -76,17 +80,15 @@ kotlin {
                 implementation("com.github.ynab:j2v8:6.2.1-16kb.2")
             }
         }
-        val androidInstrumentedTest by getting {
+        val androidDeviceTest by getting {
             dependsOn(commonTest)
             dependencies {
                 implementation("androidx.test:runner:1.7.0")
             }
         }
 
-        val iosX64Main by getting
         val iosArm64Main by getting
         val iosSimulatorArm64Main by getting
-        val macosX64Main by getting
         val macosArm64Main by getting
     }
 
@@ -101,21 +103,6 @@ kotlin {
             optIn("kotlin.experimental.ExperimentalNativeApi")
             optIn("kotlin.js.ExperimentalJsExport")
         }
-    }
-}
-
-android {
-    namespace = "app.zenmoney.jsbridge"
-    compileSdk = 35
-    sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
-    defaultConfig {
-        minSdk = 24
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
     }
 }
 

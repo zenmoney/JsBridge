@@ -1,8 +1,8 @@
 pluginManagement {
     resolutionStrategy {
         eachPlugin {
-            if (requested.id.id == "com.android.library") {
-                useModule("com.android.tools.build:gradle:8.13.0")
+            if (requested.id.id == "com.android.kotlin.multiplatform.library") {
+                useModule("com.android.tools.build:gradle:9.1.0")
             }
         }
     }
@@ -12,14 +12,14 @@ pluginManagement {
         mavenCentral()
     }
     plugins {
-        kotlin("multiplatform") version "2.2.21"
-        kotlin("plugin.serialization") version "2.2.21"
-        id("org.jlleitschuh.gradle.ktlint") version "14.0.1"
+        kotlin("multiplatform") version "2.3.21"
+        kotlin("plugin.serialization") version "2.3.21"
+        id("org.jlleitschuh.gradle.ktlint") version "14.2.0"
     }
 }
 
 plugins {
-    id("org.gradle.toolchains.foojay-resolver-convention") version "0.6.0"
+    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
 rootProject.name = "jsbridge"
