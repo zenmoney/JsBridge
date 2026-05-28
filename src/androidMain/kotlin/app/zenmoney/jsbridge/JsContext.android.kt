@@ -139,7 +139,7 @@ actual class JsContext : AutoCloseable {
                     *args.toTypedArray(),
                 ),
             )
-        val v8Value: Any =
+        val v8Value: Any? =
             (callFunction as JsFunctionImpl).v8Function.call(
                 null,
                 (fullArgs as JsArrayImpl).v8Array,
