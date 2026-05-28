@@ -10,7 +10,7 @@ import com.eclipsesource.v8.V8Value
 import java.nio.ByteBuffer
 
 actual class JsContext : AutoCloseable {
-    internal actual val core = JsContextCore()
+    internal actual val core = JsContextCore(this)
     private val v8Runtime: V8 = V8.createV8Runtime()
 
     actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }

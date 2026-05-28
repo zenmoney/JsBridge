@@ -63,9 +63,11 @@ expect class JsContext : AutoCloseable {
     override fun close()
 }
 
-internal class JsContextCore : AutoCloseable {
+internal class JsContextCore(
+    context: JsContext,
+) : AutoCloseable {
     @Suppress("PropertyName")
-    internal var _scope: JsScope? = JsScope()
+    internal var _scope: JsScope? = JsScope().also { it._context = context }
     var scopeValuesPool: MutableList<ArrayList<AutoCloseable>>? = arrayListOf()
     var eventLoop: JsEventLoop? = null
 

@@ -6,12 +6,13 @@ open class JsScope internal constructor(
     AutoCloseable {
     constructor(context: JsContext) : this(context.core.scopeValuesPool?.removeLastOrNull()) {
         _context = context
-        parent = context.core.scope.also { it.tryAutoClose(this) }
+        context.core.scope.also { it.tryAutoClose(this) }
     }
 
-    private var parent: JsScope? = null
     private var values: ArrayList<AutoCloseable>? = values ?: arrayListOf()
-    private var _context: JsContext? = null
+
+    @Suppress("PropertyName")
+    internal var _context: JsContext? = null
     val context: JsContext
         get() = checkNotNull(_context) { "JsScope is already closed" }
 
@@ -36,10 +37,6 @@ open class JsScope internal constructor(
     fun <T : JsValue> T.autoClose(): T = this.also { autoClose(it) }
 
     fun <T : Collection<JsValue>> T.autoClose(): T = this.also { autoClose(it) }
-
-    fun <T : JsValue> T.escape(): T = this.also { escape(it) }
-
-    fun <T : Collection<JsValue>> T.escape(): T = this.also { escape(it) }
 
     @Throws(JsException::class)
     fun eval(script: String): JsValue = context.evaluateScript(script).autoClose()
@@ -77,7 +74,7 @@ open class JsScope internal constructor(
                 forEach { it.close() }
                 clear()
             }?.let { _context?.core?.scopeValuesPool?.add(it) }
-        parent?.also { parent = null }?.tryEscape(this)
+        scope?.also { scope = null }?.tryEscape(this)
         _context = null
     }
 
@@ -91,7 +88,10 @@ open class JsScope internal constructor(
             return false
         }
         values.add(value)
-        value.asScopeItem().indexInScope = values.lastIndex
+        value.asScopeItem().let {
+            it.indexInScope = values.lastIndex
+            it.scope = this
+        }
         return true
     }
 
@@ -127,6 +127,7 @@ private fun Any.asScopeItem(): JsScopeItem =
     }
 
 sealed class JsScopeItem {
+    internal var scope: JsScope? = null
     internal var indexInScope: Int = -1
 }
 

@@ -11,28 +11,34 @@ internal expect val JsValue.core: JsValueCore
 internal class JsValueCore(
     context: JsContext,
 ) : JsScopeItem() {
-    @Suppress("PropertyName")
-    internal var _context: JsContext? = context
+    init {
+        scope = context.core.scope
+    }
+
     val context: JsContext
-        get() = checkNotNull(_context) { "JsValue is already closed" }
+        get() = checkNotNull(scope) { "JsValue is already closed" }.context
 
     fun close(value: JsValue): Boolean {
-        if (value.isSingleton() && _context?.isClosed == false) {
+        if (value.isSingleton() && scope?._context?.isClosed == false) {
             return false
         }
-        _context?.closeValue(value)
-        _context = null
+        scope?._context?.closeValue(value)
+        scope = null
         return true
     }
 }
 
 internal fun JsValue.isSingleton(): Boolean {
-    val context = core._context ?: return false
+    val context = core.scope?._context ?: return false
     return this === context.globalThis || this === context.NULL || this === context.UNDEFINED
 }
 
 @Suppress("FunctionName")
 fun <T : JsValue> JsScope.JsValueAlias(value: T): T = context.createValueAlias(value).autoClose()
+
+fun <T : JsValue> T.escape(): T = also { core.scope?.escape(it) }
+
+fun <T : Collection<JsValue>> T.escape(): T = also { forEach { value -> value.escape() } }
 
 fun JsValue.toJson(): String =
     jsScoped(context) {
@@ -43,14 +49,17 @@ fun JsValue.toJson(): String =
 fun JsValue.toPlainValue(): Any? = context.getPlainValueOf(this)
 
 val JsValue.isClosed: Boolean
-    get() = core._context == null
+    get() = core.scope == null
 
 val JsValue.isScoped: Boolean
     get() =
-        core._context
-            ?.core
-            ?.scope
-            ?.let { !it.contains(this) } ?: false
+        core.scope?.let {
+            it !==
+                core.scope
+                    ?._context
+                    ?.core
+                    ?._scope
+        } ?: false
 
 internal fun JsValue.toBasicPlainValue(): Any? {
     return when (this) {

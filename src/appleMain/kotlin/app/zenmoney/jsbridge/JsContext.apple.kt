@@ -5,7 +5,7 @@ import platform.JavaScriptCore.JSValue
 import platform.JavaScriptCore.objectForKeyedSubscript
 
 actual class JsContext : AutoCloseable {
-    internal actual val core = JsContextCore()
+    internal actual val core = JsContextCore(this)
 
     @Suppress("PropertyName")
     private var _jsContext: JSContext? = JSContext()

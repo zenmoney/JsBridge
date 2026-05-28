@@ -28,7 +28,7 @@ import com.caoccao.javet.values.reference.V8ValueStringObject
 import com.caoccao.javet.values.reference.V8ValueTypedArray
 
 actual class JsContext : AutoCloseable {
-    internal actual val core = JsContextCore()
+    internal actual val core = JsContextCore(this)
     internal val v8Runtime: V8Runtime = V8Host.getV8Instance().createV8Runtime()
 
     actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
