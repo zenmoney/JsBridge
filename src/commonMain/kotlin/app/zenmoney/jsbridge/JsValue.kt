@@ -6,7 +6,13 @@ expect sealed interface JsValue : AutoCloseable {
     val context: JsContext
 }
 
-internal expect val JsValue.core: JsValueCore
+internal val JsValue.core: JsValueCore
+    get() = (this as JsValueCoreOwner)._core
+
+internal interface JsValueCoreOwner : JsValue {
+    @Suppress("PropertyName")
+    val _core: JsValueCore
+}
 
 internal class JsValueCore(
     context: JsContext,

@@ -14,7 +14,7 @@ internal class JsDateImpl(
     v8Value: V8Object,
 ) : JsObjectImpl(context, v8Value),
     JsDate {
-    private val millis: Long = (context.jsGetTime.call(v8Value, null) as Number).toLong()
+    private val millis: Long = ((context as JsEngineContext).jsGetTime.call(v8Value, null) as Number).toLong()
 
     override fun hashCode(): Int = millis.toInt()
 

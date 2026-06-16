@@ -10,8 +10,6 @@ actual sealed interface JsObject : JsValue {
     )
 }
 
-internal actual fun JsObject.getValue(key: String): JsValue = context.createValue((this as JsObjectImpl).v8Object.get(key))
-
 internal open class JsObjectImpl(
     context: JsContext,
     v8Object: V8Object,

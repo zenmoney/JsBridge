@@ -6,19 +6,17 @@ actual sealed interface JsValue : AutoCloseable {
     actual val context: JsContext
 }
 
-internal actual val JsValue.core: JsValueCore
-    get() = (this as JsValueImpl)._core
-
 internal open class JsValueImpl(
     context: JsContext,
     jsValue: JSValue,
-) : JsValue {
+) : JsValue,
+    JsValueCoreOwner {
     private var _jsValue: JSValue? = jsValue
     val jsValue: JSValue
         get() = checkNotNull(_jsValue) { "JsValue is already closed" }
 
     @Suppress("PropertyName")
-    internal val _core = JsValueCore(context)
+    override val _core = JsValueCore(context)
     override val context: JsContext
         get() = _core.context
 

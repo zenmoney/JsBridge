@@ -9,7 +9,7 @@ actual sealed interface JsDate : JsObject {
     actual fun toMillis(): Long
 }
 
-fun JsScope.JsDate(date: NSDate): JsDate = context.createValue(JSValue.valueWithObject(date, context.jsContext)).autoClose() as JsDate
+fun JsScope.JsDate(date: NSDate): JsDate = JsDate(context, (date.timeIntervalSinceReferenceDate * 1000.0).toLong()).autoClose()
 
 internal class JsDateImpl(
     context: JsContext,

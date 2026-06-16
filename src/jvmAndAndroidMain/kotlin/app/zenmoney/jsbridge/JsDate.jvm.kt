@@ -10,8 +10,7 @@ actual sealed interface JsDate : JsObject {
 
 fun JsScope.JsDate(date: Date): JsDate = JsDate(context, date.time).autoClose()
 
-fun JsScope.JsDate(date: ZonedDateTime): JsDate =
-    context.createValue(context.v8Runtime.createV8ValueZonedDateTime(date)).autoClose() as JsDate
+fun JsScope.JsDate(date: ZonedDateTime): JsDate = JsDate(context, date.toInstant().toEpochMilli()).autoClose()
 
 internal class JsDateImpl(
     context: JsContext,

@@ -1,67 +1,147 @@
 package app.zenmoney.jsbridge
 
-expect class JsContext : AutoCloseable {
-    internal val core: JsContextCore
+expect sealed class JsContext(
+    unit: Unit,
+) : AutoCloseable {
+    internal abstract val core: JsContextCore
 
-    var getPlainValueOf: (JsValue) -> Any?
+    abstract var getPlainValueOf: (JsValue) -> Any?
 
-    val globalThis: JsObject
+    abstract val globalThis: JsObject
 
-    internal val NULL: JsNull
-    internal val UNDEFINED: JsUndefined
-
-    constructor()
-
-    @Throws(JsException::class)
-    internal fun evaluateScript(script: String): JsValue
+    internal abstract val NULL: JsNull
+    internal abstract val UNDEFINED: JsUndefined
 
     @Throws(JsException::class)
-    internal fun callFunction(
+    internal abstract fun evaluateScript(script: String): JsValue
+
+    @Throws(JsException::class)
+    internal abstract fun callFunction(
         f: JsFunction,
         args: List<JsValue>,
         thiz: JsValue,
     ): JsValue
 
     @Throws(JsException::class)
-    internal fun callFunctionAsConstructor(
+    internal abstract fun callFunctionAsConstructor(
         f: JsFunction,
         args: List<JsValue>,
     ): JsValue
 
-    internal fun createArray(value: Iterable<JsValue>): JsArray
+    internal abstract fun createArray(value: Iterable<JsValue>): JsArray
 
-    internal fun createBoolean(value: Boolean): JsBoolean
+    internal abstract fun createBoolean(value: Boolean): JsBoolean
 
-    internal fun createBooleanObject(value: Boolean): JsBooleanObject
+    internal abstract fun createBooleanObject(value: Boolean): JsBooleanObject
 
-    internal fun createDate(millis: Long): JsDate
+    internal abstract fun createDate(millis: Long): JsDate
 
-    internal fun createError(exception: Throwable): JsObject
+    internal abstract fun createError(exception: Throwable): JsObject
 
-    internal fun createException(error: JsValue): JsException
+    internal abstract fun createException(error: JsValue): JsException
 
-    internal fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction
+    internal abstract fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction
 
-    internal fun createNumber(value: Number): JsNumber
+    internal abstract fun createNumber(value: Number): JsNumber
 
-    internal fun createNumberObject(value: Number): JsNumberObject
+    internal abstract fun createNumberObject(value: Number): JsNumberObject
 
-    internal fun createObject(): JsObject
+    internal abstract fun createObject(): JsObject
 
-    internal fun createPromise(executor: JsScope.(resolve: JsFunction, reject: JsFunction) -> Unit): JsPromise
+    internal abstract fun createPromise(executor: JsScope.(resolve: JsFunction, reject: JsFunction) -> Unit): JsPromise
 
-    internal fun createString(value: String): JsString
+    internal abstract fun createString(value: String): JsString
 
-    internal fun createStringObject(value: String): JsStringObject
+    internal abstract fun createStringObject(value: String): JsStringObject
 
-    internal fun createUint8Array(value: ByteArray): JsUint8Array
+    internal abstract fun createUint8Array(value: ByteArray): JsUint8Array
 
-    internal fun <T : JsValue> createValueAlias(value: T): T
+    internal abstract fun <T : JsValue> createValueAlias(value: T): T
 
-    internal fun closeValue(value: JsValue)
+    internal abstract fun closeValue(value: JsValue)
+
+    abstract override fun close()
+
+    internal abstract fun getObjectValue(
+        obj: JsArray,
+        index: Int,
+    ): JsValue
+
+    internal abstract fun getObjectValue(
+        obj: JsObject,
+        key: String,
+    ): JsValue
+}
+
+expect class JsEngineContext : JsContext {
+    constructor()
+
+    override val core: JsContextCore
+    override var getPlainValueOf: (JsValue) -> Any?
+    override val globalThis: JsObject
+    override val NULL: JsNull
+    override val UNDEFINED: JsUndefined
+
+    override fun evaluateScript(script: String): JsValue
+
+    override fun callFunction(
+        f: JsFunction,
+        args: List<JsValue>,
+        thiz: JsValue,
+    ): JsValue
+
+    override fun callFunctionAsConstructor(
+        f: JsFunction,
+        args: List<JsValue>,
+    ): JsValue
+
+    override fun createArray(value: Iterable<JsValue>): JsArray
+
+    override fun createBoolean(value: Boolean): JsBoolean
+
+    override fun createBooleanObject(value: Boolean): JsBooleanObject
+
+    override fun createDate(millis: Long): JsDate
+
+    override fun createError(exception: Throwable): JsObject
+
+    override fun createException(error: JsValue): JsException
+
+    override fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction
+
+    override fun createNumber(value: Number): JsNumber
+
+    override fun createNumberObject(value: Number): JsNumberObject
+
+    override fun createObject(): JsObject
+
+    override fun createPromise(executor: JsScope.(resolve: JsFunction, reject: JsFunction) -> Unit): JsPromise
+
+    override fun createString(value: String): JsString
+
+    override fun createStringObject(value: String): JsStringObject
+
+    override fun createUint8Array(value: ByteArray): JsUint8Array
+
+    override fun <T : JsValue> createValueAlias(value: T): T
+
+    override fun closeValue(value: JsValue)
 
     override fun close()
+
+    override fun getObjectValue(
+        obj: JsArray,
+        index: Int,
+    ): JsValue
+
+    override fun getObjectValue(
+        obj: JsObject,
+        key: String,
+    ): JsValue
 }
+
+@Suppress("FunctionName")
+fun JsContext(): JsEngineContext = JsEngineContext()
 
 internal class JsContextCore(
     context: JsContext,

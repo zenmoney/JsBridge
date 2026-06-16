@@ -8,8 +8,6 @@ actual sealed interface JsArray : JsObject {
     actual val size: Int
 }
 
-internal actual fun JsArray.getValue(index: Int): JsValue = context.createValue((this as JsArrayImpl).jsValue.valueAtIndex(index.toULong()))
-
 internal class JsArrayImpl(
     context: JsContext,
     jsValue: JSValue,

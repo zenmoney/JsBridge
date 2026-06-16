@@ -11,9 +11,6 @@ actual sealed interface JsObject : JsValue {
     )
 }
 
-internal actual fun JsObject.getValue(key: String): JsValue =
-    context.createValue((this as JsObjectImpl).jsValue.objectForKeyedSubscript(key))
-
 internal open class JsObjectImpl(
     context: JsContext,
     jsValue: JSValue,

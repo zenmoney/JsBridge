@@ -3,25 +3,98 @@ package app.zenmoney.jsbridge
 import platform.JavaScriptCore.JSContext
 import platform.JavaScriptCore.JSValue
 import platform.JavaScriptCore.objectForKeyedSubscript
+import platform.JavaScriptCore.valueAtIndex
 
-actual class JsContext : AutoCloseable {
-    internal actual val core = JsContextCore(this)
+actual sealed class JsContext actual constructor(
+    unit: Unit,
+) : AutoCloseable {
+    internal actual abstract val core: JsContextCore
+    actual abstract var getPlainValueOf: (JsValue) -> Any?
+    actual abstract val globalThis: JsObject
+    internal actual abstract val NULL: JsNull
+    internal actual abstract val UNDEFINED: JsUndefined
+
+    @Throws(JsException::class)
+    internal actual abstract fun evaluateScript(script: String): JsValue
+
+    @Throws(JsException::class)
+    internal actual abstract fun callFunction(
+        f: JsFunction,
+        args: List<JsValue>,
+        thiz: JsValue,
+    ): JsValue
+
+    @Throws(JsException::class)
+    internal actual abstract fun callFunctionAsConstructor(
+        f: JsFunction,
+        args: List<JsValue>,
+    ): JsValue
+
+    internal actual abstract fun createArray(value: Iterable<JsValue>): JsArray
+
+    internal actual abstract fun createBoolean(value: Boolean): JsBoolean
+
+    internal actual abstract fun createBooleanObject(value: Boolean): JsBooleanObject
+
+    internal actual abstract fun createDate(millis: Long): JsDate
+
+    internal actual abstract fun createError(exception: Throwable): JsObject
+
+    internal actual abstract fun createException(error: JsValue): JsException
+
+    internal actual abstract fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction
+
+    internal actual abstract fun createNumber(value: Number): JsNumber
+
+    internal actual abstract fun createNumberObject(value: Number): JsNumberObject
+
+    internal actual abstract fun createObject(): JsObject
+
+    internal actual abstract fun createPromise(executor: JsScope.(resolve: JsFunction, reject: JsFunction) -> Unit): JsPromise
+
+    internal actual abstract fun createString(value: String): JsString
+
+    internal actual abstract fun createStringObject(value: String): JsStringObject
+
+    internal actual abstract fun createUint8Array(value: ByteArray): JsUint8Array
+
+    internal actual abstract fun <T : JsValue> createValueAlias(value: T): T
+
+    internal actual abstract fun closeValue(value: JsValue)
+
+    actual abstract override fun close()
+
+    internal actual abstract fun getObjectValue(
+        obj: JsArray,
+        index: Int,
+    ): JsValue
+
+    internal actual abstract fun getObjectValue(
+        obj: JsObject,
+        key: String,
+    ): JsValue
+}
+
+actual class JsEngineContext :
+    JsContext(Unit),
+    AutoCloseable {
+    actual override val core = JsContextCore(this)
 
     @Suppress("PropertyName")
     private var _jsContext: JSContext? = JSContext()
     internal val jsContext: JSContext
         get() = checkNotNull(_jsContext) { "JsContext is already closed" }
 
-    actual var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
+    actual override var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
 
-    actual val globalThis: JsObject =
+    actual override val globalThis: JsObject =
         JsObjectImpl(this, jsContext.globalObject!!)
             .also { registerValue(it) }
 
-    internal actual val NULL: JsNull =
+    actual override val NULL: JsNull =
         JsNullImpl(this, JSValue.valueWithNullInContext(jsContext)!!)
             .also { registerValue(it) }
-    internal actual val UNDEFINED: JsUndefined =
+    actual override val UNDEFINED: JsUndefined =
         JsUndefinedImpl(this, JSValue.valueWithUndefinedInContext(jsContext)!!)
             .also { registerValue(it) }
 
@@ -86,14 +159,14 @@ actual class JsContext : AutoCloseable {
         )!!
 
     @Throws(JsException::class)
-    internal actual fun evaluateScript(script: String): JsValue {
+    actual override fun evaluateScript(script: String): JsValue {
         val jsValue = jsContext.evaluateScript(script)
         throwExceptionIfNeeded()
         return createValue(jsValue)
     }
 
     @Throws(JsException::class)
-    internal actual fun callFunction(
+    actual override fun callFunction(
         f: JsFunction,
         args: List<JsValue>,
         thiz: JsValue,
@@ -111,7 +184,7 @@ actual class JsContext : AutoCloseable {
     }
 
     @Throws(JsException::class)
-    internal actual fun callFunctionAsConstructor(
+    actual override fun callFunctionAsConstructor(
         f: JsFunction,
         args: List<JsValue>,
     ): JsValue {
@@ -129,7 +202,7 @@ actual class JsContext : AutoCloseable {
         }
     }
 
-    internal actual fun createArray(value: Iterable<JsValue>): JsArray =
+    actual override fun createArray(value: Iterable<JsValue>): JsArray =
         JsArrayImpl(
             this,
             JSValue.valueWithObject(
@@ -138,9 +211,9 @@ actual class JsContext : AutoCloseable {
             )!!,
         ).also { registerValue(it) }
 
-    internal actual fun createBoolean(value: Boolean): JsBoolean = createValue(value) as JsBoolean
+    actual override fun createBoolean(value: Boolean): JsBoolean = createValue(value) as JsBoolean
 
-    internal actual fun createBooleanObject(value: Boolean): JsBooleanObject =
+    actual override fun createBooleanObject(value: Boolean): JsBooleanObject =
         JsBooleanObjectImpl(
             this,
             jsBoolean.checkNotNull().constructWithArguments(
@@ -150,14 +223,14 @@ actual class JsContext : AutoCloseable {
             )!!,
         ).also { registerValue(it) }
 
-    internal actual fun createDate(millis: Long): JsDate =
+    actual override fun createDate(millis: Long): JsDate =
         createValue(jsDate.checkNotNull().constructWithArguments(listOf(millis))) as JsDate
 
-    internal actual fun createError(exception: Throwable): JsObject =
+    actual override fun createError(exception: Throwable): JsObject =
         JsObjectImpl(this, createJsError(exception))
             .also { registerValue(it) }
 
-    internal actual fun createException(error: JsValue): JsException = createException((error as JsValueImpl).jsValue)
+    actual override fun createException(error: JsValue): JsException = createException((error as JsValueImpl).jsValue)
 
     private fun createException(error: JSValue): JsException =
         JsException(
@@ -209,9 +282,10 @@ actual class JsContext : AutoCloseable {
         return jsError
     }
 
-    internal actual fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction {
+    actual override fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction {
         val f: () -> JSValue = {
             jsFunctionScoped(this) {
+                val context = context as JsEngineContext
                 (
                     try {
                         _thiz = context.createValue(JSContext.currentThis()).autoClose()
@@ -232,9 +306,9 @@ actual class JsContext : AutoCloseable {
         ).also { registerValue(it) }
     }
 
-    internal actual fun createNumber(value: Number): JsNumber = createValue(value) as JsNumber
+    actual override fun createNumber(value: Number): JsNumber = createValue(value) as JsNumber
 
-    internal actual fun createNumberObject(value: Number): JsNumberObject =
+    actual override fun createNumberObject(value: Number): JsNumberObject =
         JsNumberObjectImpl(
             this,
             jsNumber.checkNotNull().constructWithArguments(
@@ -244,11 +318,11 @@ actual class JsContext : AutoCloseable {
             )!!,
         ).also { registerValue(it) }
 
-    internal actual fun createObject(): JsObject =
+    actual override fun createObject(): JsObject =
         JsObjectImpl(this, JSValue.valueWithNewObjectInContext(jsContext)!!)
             .also { registerValue(it) }
 
-    internal actual fun createPromise(executor: JsScope.(JsFunction, JsFunction) -> Unit): JsPromise =
+    actual override fun createPromise(executor: JsScope.(JsFunction, JsFunction) -> Unit): JsPromise =
         createFunction {
             executor(
                 this,
@@ -263,9 +337,9 @@ actual class JsContext : AutoCloseable {
             ).also { registerValue(it) }
         }
 
-    internal actual fun createString(value: String): JsString = createValue(value) as JsString
+    actual override fun createString(value: String): JsString = createValue(value) as JsString
 
-    internal actual fun createStringObject(value: String): JsStringObject =
+    actual override fun createStringObject(value: String): JsStringObject =
         JsStringObjectImpl(
             this,
             jsString.checkNotNull().constructWithArguments(
@@ -275,7 +349,7 @@ actual class JsContext : AutoCloseable {
             )!!,
         ).also { registerValue(it) }
 
-    internal actual fun createUint8Array(value: ByteArray): JsUint8Array =
+    actual override fun createUint8Array(value: ByteArray): JsUint8Array =
         JsUint8ArrayImpl(
             this,
             jsUint8Array.checkNotNull().constructWithArguments(
@@ -285,7 +359,7 @@ actual class JsContext : AutoCloseable {
             )!!,
         ).also { registerValue(it) }
 
-    internal fun createValue(value: Any?): JsValue =
+    private fun createValue(value: Any?): JsValue =
         when (value) {
             null -> {
                 NULL
@@ -374,7 +448,7 @@ actual class JsContext : AutoCloseable {
             }
         }.also { registerValue(it) }
 
-    internal actual fun <T : JsValue> createValueAlias(value: T): T {
+    actual override fun <T : JsValue> createValueAlias(value: T): T {
         @Suppress("UNCHECKED_CAST")
         return createValue((value as JsValueImpl).jsValue) as T
     }
@@ -383,7 +457,7 @@ actual class JsContext : AutoCloseable {
         core.addValue(value)
     }
 
-    internal actual fun closeValue(value: JsValue) {
+    actual override fun closeValue(value: JsValue) {
         core.removeValue(value)
     }
 
@@ -402,6 +476,16 @@ actual class JsContext : AutoCloseable {
         jsUint8Array = null
         jsWrapFunction = null
     }
+
+    actual override fun getObjectValue(
+        obj: JsArray,
+        index: Int,
+    ): JsValue = createValue((obj as JsArrayImpl).jsValue.valueAtIndex(index.toULong()))
+
+    actual override fun getObjectValue(
+        obj: JsObject,
+        key: String,
+    ): JsValue = createValue((obj as JsObjectImpl).jsValue.objectForKeyedSubscript(key))
 }
 
 private fun JSValue?.checkNotNull(): JSValue = checkNotNull(this) { "JsContext is already closed" }

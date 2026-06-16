@@ -1,6 +1,8 @@
 package app.zenmoney.jsbridge
 
-import app.zenmoney.jsbridge.getTag
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -17,17 +19,63 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class JsContextTest {
-    private lateinit var context: JsContext
+abstract class JsContextTest {
+    protected lateinit var context: JsContext
 
     @BeforeTest
-    fun createContext() {
-        context = JsContext()
+    fun onBeforeTest() {
+        context = createContext()
     }
 
     @AfterTest
-    fun closeContext() {
-        context.close()
+    fun onAfterTest() {
+        if (::context.isInitialized) {
+            context.close()
+        }
+    }
+
+    abstract fun createContext(): JsContext
+
+    private fun attachEventLoop(coroutineScope: CoroutineScope): JsEventLoop =
+        JsEventLoop(coroutineScope.coroutineContext).apply {
+            attachTo(context)
+        }
+
+    private fun CoroutineScope.awaitPromise(
+        value: JsValue,
+        checkType: Boolean = true,
+    ): Deferred<JsValue> {
+        if (checkType) {
+            assertIs<JsPromise>(value)
+        }
+        val scope = JsScope(context)
+        return async {
+            try {
+                with(scope) {
+                    value.await().escape()
+                }
+            } finally {
+                scope.close()
+            }
+        }
+    }
+
+    private fun CoroutineScope.awaitPromiseResult(value: JsValue): Deferred<Result<JsValue>> {
+        assertIs<JsPromise>(value)
+        val scope = JsScope(context)
+        return async {
+            try {
+                Result.success(
+                    with(scope) {
+                        value.await().escape()
+                    },
+                )
+            } catch (e: Throwable) {
+                Result.failure(e)
+            } finally {
+                scope.close()
+            }
+        }
     }
 
     @Test
@@ -66,89 +114,6 @@ class JsContextTest {
                 e.data,
             )
         }
-    }
-
-    @Test
-    fun throwsJsExceptionWithNativeExceptionCause() {
-        var exception: Exception? = null
-        val f =
-            JsFunction(context) {
-                exception = RuntimeException("my error message")
-                throw exception
-            }
-        context.globalThis["f"] = f
-        try {
-            context.evaluateScript("f(1, 2)")
-            assertTrue(false)
-        } catch (e: JsException) {
-            assertEquals("Error", e.name)
-            assertEquals("my error message", e.message)
-            assertEquals(exception, e.cause)
-            assertEquals(
-                emptyMap(),
-                e.data,
-            )
-        }
-        try {
-            f.call(
-                listOf(
-                    JsNumber(context, 1),
-                    JsNumber(context, 2),
-                ),
-            )
-            assertTrue(false)
-        } catch (e: JsException) {
-            assertEquals("Error", e.name)
-            assertEquals("my error message", e.message)
-            assertEquals(exception, e.cause)
-            assertEquals(
-                emptyMap(),
-                e.data,
-            )
-        }
-    }
-
-    @Test
-    fun throwsJsExceptionWithNativeExceptionCauseWithEmptyMessage() {
-        var exception: Exception? = null
-        val f =
-            JsFunction(context) {
-                exception = NullPointerException()
-                throw exception
-            }
-
-        context.globalThis["f"] = f
-        try {
-            context.evaluateScript("f(1, 2)")
-            assertTrue(false)
-        } catch (e: JsException) {
-            assertEquals("Error", e.name)
-            assertEquals(exception, e.cause)
-            assertEquals(
-                emptyMap(),
-                e.data,
-            )
-        }
-    }
-
-    @Test
-    fun catchesNativeException() {
-        var exception: Exception? = null
-        val f =
-            JsFunction(context) {
-                exception = RuntimeException("my error message")
-                throw exception
-            }
-        context.globalThis["f"] = f
-        val error = context.evaluateScript("try { f(1, 2) } catch (e) { e }")
-        val e = JsException(error)
-        assertEquals("Error", e.name)
-        assertEquals("my error message", e.message)
-        assertEquals(exception, e.cause)
-        assertEquals(
-            emptyMap(),
-            e.data,
-        )
     }
 
     @Test
@@ -298,101 +263,6 @@ class JsContextTest {
     }
 
     @Test
-    fun callsNativeFunctionWithoutArguments() {
-        var callCount = 0
-        val value =
-            JsFunction(context) {
-                callCount++
-                assertEquals(emptyList(), it)
-                JsNumber(context, 3)
-            }
-        context.globalThis["f"] = value
-        val result = context.evaluateScript("f()")
-        assertEquals(1, callCount)
-        assertEquals(JsNumber(context, 3), result)
-        assertEquals(value, context.createValueAlias(value))
-    }
-
-    @Test
-    fun callsNativeFunction() {
-        var callCount = 0
-        context.globalThis["f"] =
-            JsFunction(context) {
-                callCount++
-                assertEquals(4, it.size)
-                assertEquals(
-                    listOf(
-                        JsNumber(context, 1),
-                        context.NULL,
-                        context.UNDEFINED,
-                        JsNumber(context, 2),
-                    ),
-                    it,
-                )
-                JsNumber(context, 5)
-            }
-        val result = context.evaluateScript("f(1, null, undefined, 2)")
-        assertEquals(1, callCount)
-        assertEquals(JsNumber(context, 5), result)
-    }
-
-    @Test
-    fun callsNativeFunctionWithGivenThis() {
-        var callCount = 0
-        var thiz: JsValue? = null
-        var args: List<JsValue>? = null
-        val obj = JsObject(context)
-        context.globalThis["obj"] = obj
-        val a = context.evaluateScript("var a = {}; a")
-        val b = JsArray(context, listOf(a, JsNumber(context, 7.1)))
-        context.globalThis["b"] = b
-        obj["f"] =
-            JsFunction(context) {
-                callCount++
-                thiz = this.thiz.escape()
-                args = it.escape()
-                JsNumber(context, 5)
-            }
-        val result = context.evaluateScript("obj.f(1, 2, a, b)")
-        assertEquals(1, callCount)
-        assertEquals(4, args?.size)
-        assertEquals(
-            listOf(
-                JsNumber(context, 1),
-                JsNumber(context, 2),
-                a,
-                b,
-            ),
-            args,
-        )
-        assertEquals(obj, thiz)
-        assertEquals(JsNumber(context, 5), result)
-    }
-
-    @Test
-    fun callsNativeFunctionReturningArrayOfObjects() {
-        var callCount = 0
-        context.globalThis["f"] =
-            JsFunction(context) {
-                callCount++
-                JsArray(
-                    context,
-                    ('a'..'z').map { context.evaluateScript("var obj = {$it: '$it'}; obj") },
-                )
-            }
-        val result = context.evaluateScript("f()")
-        assertEquals(1, callCount)
-        assertIs<JsArray>(result)
-        assertEquals(26, result.size)
-        assertEquals(
-            ('a'..'z').map {
-                mapOf(it.toString() to it.toString())
-            },
-            result.toPlainList(),
-        )
-    }
-
-    @Test
     fun callsJsFunction() {
         context.evaluateScript("var callCount = 0;")
         val f =
@@ -481,46 +351,6 @@ class JsContextTest {
     }
 
     @Test
-    fun objectReturnedFromNativeFunctionIsNotClosedAutomatically() {
-        var callCount = 0
-        val a = JsObject(context)
-        val b = JsObject(context)
-        a["b"] = b
-        context.globalThis["f"] =
-            JsFunction(context) {
-                callCount++
-                a
-            }
-        val result = context.evaluateScript("var obj = f()")
-        assertEquals(context.UNDEFINED, result)
-        assertEquals(1, callCount)
-        a["c"] = JsNumber(context, 1)
-        a["d"] = JsNumber(context, 2)
-    }
-
-    @Test
-    fun returnsJsErrorObjectAndConvertsItToJsExceptionWithNativeExceptionCause() {
-        var exception: Exception? = null
-        val f =
-            JsFunction(context) {
-                exception = RuntimeException("my error message")
-                JsObject(exception)
-            }
-        context.globalThis["f"] = f
-        val error = context.evaluateScript("var error = f(1, 2); error")
-        assertIs<JsObject>(error)
-        assertEquals(JsBoolean(context, true), context.evaluateScript("error instanceof Error"))
-        val e = JsException(error)
-        assertEquals("Error", e.name)
-        assertEquals("my error message", e.message)
-        assertEquals(exception, e.cause)
-        assertEquals(
-            emptyMap(),
-            e.data,
-        )
-    }
-
-    @Test
     fun resolvesPromiseValue() =
         runTest {
             val eventLoop =
@@ -563,7 +393,7 @@ class JsContextTest {
                 )
             assertIs<JsObject>(result)
             try {
-                jsScoped(context) { result.await().escape() }
+                jsScoped(context) { result.await() }
                 assertTrue(false)
             } catch (e: JsException) {
                 assertEquals("Error", e.name)
@@ -600,31 +430,308 @@ class JsContextTest {
         }
 
     @Test
-    fun callsNativeFunctionAsConstructor() {
-        var callCount = 0
-        var thiz: JsValue? = null
-        context.globalThis["f"] =
-            JsFunction(context) {
-                callCount++
-                assertEquals(4, it.size)
-                assertEquals(
-                    listOf(
-                        JsNumber(context, 1),
-                        context.NULL,
-                        context.UNDEFINED,
-                        JsNumber(context, 2),
-                    ),
-                    it,
+    fun callsNativeFunctionWithoutArgumentsAsynchronously() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+            var callCount = 0
+            val value =
+                JsFunction(context) {
+                    callCount++
+                    assertEquals(emptyList(), it)
+                    JsNumber(context, 3)
+                }
+            context.globalThis["f"] = value
+
+            val result = awaitPromise(context.evaluateScript("(async () => await f())()"))
+            eventLoop.runAndComplete()
+
+            assertEquals(1, callCount)
+            assertEquals(JsNumber(context, 3), result.await())
+            assertEquals(value, context.createValueAlias(value))
+        }
+
+    @Test
+    fun callsNativeFunctionAsynchronously() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+            var callCount = 0
+            context.globalThis["f"] =
+                JsFunction(context) {
+                    callCount++
+                    assertEquals(
+                        listOf(
+                            JsNumber(context, 1),
+                            context.NULL,
+                            context.UNDEFINED,
+                            JsNumber(context, 2),
+                        ),
+                        it,
+                    )
+                    JsNumber(context, 5)
+                }
+
+            val result = awaitPromise(context.evaluateScript("(async () => await f(1, null, undefined, 2))()"))
+            eventLoop.runAndComplete()
+
+            assertEquals(1, callCount)
+            assertEquals(JsNumber(context, 5), result.await())
+        }
+
+    @Test
+    fun callsNativeFunctionWithGivenThisAsynchronously() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+            var callCount = 0
+            var thiz: JsValue? = null
+            var args: List<JsValue>? = null
+            val obj = JsObject(context)
+            context.globalThis["obj"] = obj
+            val a = context.evaluateScript("var a = {}; a")
+            val b = JsArray(context, listOf(a, JsNumber(context, 7.1)))
+            context.globalThis["b"] = b
+            obj["f"] =
+                JsFunction(context) {
+                    callCount++
+                    thiz = this.thiz.escape()
+                    args = it.escape()
+                    JsNumber(context, 5)
+                }
+
+            val result = awaitPromise(context.evaluateScript("(async () => await obj.f(1, 2, a, b))()"))
+            eventLoop.runAndComplete()
+
+            assertEquals(1, callCount)
+            assertEquals(
+                listOf(
+                    JsNumber(context, 1),
+                    JsNumber(context, 2),
+                    a,
+                    b,
+                ),
+                args,
+            )
+            assertEquals(obj, thiz)
+            assertEquals(JsNumber(context, 5), result.await())
+        }
+
+    @Test
+    fun callsNativeFunctionReturningArrayOfObjectsAsynchronously() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+            var callCount = 0
+            val array =
+                JsArray(
+                    context,
+                    ('a'..'z').map { context.evaluateScript("({$it: '$it'})") },
                 )
-                thiz = this.thiz.escape()
-                context.UNDEFINED
-            }
-        val result = context.evaluateScript("new f(1, null, undefined, 2)")
-        assertEquals(1, callCount)
-        assertEquals(thiz, result)
-        assertIs<JsObject>(result)
-        assertNotEquals(context.globalThis, result)
-    }
+            context.globalThis["f"] =
+                JsFunction(context) {
+                    callCount++
+                    array
+                }
+
+            val result = awaitPromise(context.evaluateScript("(async () => await f())()"))
+            eventLoop.runAndComplete()
+            val arrayResult = result.await()
+
+            assertEquals(1, callCount)
+            assertIs<JsArray>(arrayResult)
+            assertEquals(26, arrayResult.size)
+            assertEquals(
+                ('a'..'z').map {
+                    mapOf(it.toString() to it.toString())
+                },
+                arrayResult.toPlainList(),
+            )
+        }
+
+    @Test
+    fun callsNativeFunctionAsConstructorAsynchronously() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+            var callCount = 0
+            var thiz: JsValue? = null
+            context.globalThis["f"] =
+                JsFunction(context) {
+                    callCount++
+                    assertEquals(
+                        listOf(
+                            JsNumber(context, 1),
+                            context.NULL,
+                            context.UNDEFINED,
+                            JsNumber(context, 2),
+                        ),
+                        it,
+                    )
+                    thiz = this.thiz.escape()
+                    context.UNDEFINED
+                }
+
+            val result =
+                awaitPromise(
+                    context.evaluateScript(
+                        """
+                        (async () => {
+                            const result = new f(1, null, undefined, 2);
+                            if (result instanceof Promise) await result;
+                        })()
+                        """.trimIndent(),
+                    ),
+                )
+            eventLoop.runAndComplete()
+
+            assertEquals(1, callCount)
+            assertIs<JsObject>(thiz)
+            assertNotEquals(context.globalThis, thiz)
+            assertEquals(context.UNDEFINED, result.await())
+        }
+
+    @Test
+    fun throwsJsExceptionWithNativeExceptionCauseAsynchronously() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+            val exception = RuntimeException("my error message")
+            val f =
+                JsFunction(context) {
+                    throw exception
+                }
+            context.globalThis["f"] = f
+
+            val result = awaitPromiseResult(context.evaluateScript("(async () => await f(1, 2))()"))
+            eventLoop.run()
+            val e = assertIs<JsException>(result.await().exceptionOrNull())
+            assertEquals("Error", e.name)
+            assertEquals("my error message", e.message)
+            assertEquals(exception, e.cause)
+            assertEquals(emptyMap(), e.data)
+
+            val asyncF = context.evaluateScript("(async (...args) => await f(...args))") as JsFunction
+            val promise = asyncF.call(listOf(JsNumber(context, 1), JsNumber(context, 2)))
+            val promiseResult = awaitPromiseResult(promise)
+            eventLoop.runAndComplete()
+            val promiseException = assertIs<JsException>(promiseResult.await().exceptionOrNull())
+            assertEquals("Error", promiseException.name)
+            assertEquals("my error message", promiseException.message)
+            assertEquals(exception, promiseException.cause)
+            assertEquals(emptyMap(), promiseException.data)
+        }
+
+    @Test
+    fun throwsJsExceptionWithNativeExceptionCauseWithEmptyMessageAsynchronously() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+            val exception = NullPointerException()
+            context.globalThis["f"] =
+                JsFunction(context) {
+                    throw exception
+                }
+
+            val result = awaitPromiseResult(context.evaluateScript("(async () => await f(1, 2))()"))
+            eventLoop.runAndComplete()
+            val e = assertIs<JsException>(result.await().exceptionOrNull())
+
+            assertEquals("Error", e.name)
+            assertEquals(exception, e.cause)
+            assertEquals(emptyMap(), e.data)
+        }
+
+    @Test
+    fun catchesNativeExceptionAsynchronously() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+            val exception = RuntimeException("my error message")
+            context.globalThis["f"] =
+                JsFunction(context) {
+                    throw exception
+                }
+
+            val error =
+                awaitPromise(
+                    context.evaluateScript(
+                        """
+                        (async () => {
+                            try {
+                                await f(1, 2);
+                            } catch (e) {
+                                return e;
+                            }
+                        })()
+                        """.trimIndent(),
+                    ),
+                )
+            eventLoop.runAndComplete()
+            val e = JsException(error.await())
+
+            assertEquals("Error", e.name)
+            assertEquals("my error message", e.message)
+            assertEquals(exception, e.cause)
+            assertEquals(emptyMap(), e.data)
+        }
+
+    @Test
+    fun rejectsPromiseWhenNativeExecutorThrows() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+            val exception = RuntimeException("executor failed")
+            val promise =
+                JsPromise(context) { _, _ ->
+                    throw exception
+                }
+            val result = awaitPromiseResult(promise)
+
+            eventLoop.runAndComplete()
+
+            val e = assertIs<JsException>(result.await().exceptionOrNull())
+            assertEquals("Error", e.name)
+            assertEquals("executor failed", e.message)
+            assertEquals(exception, e.cause)
+        }
+
+    @Test
+    fun objectReturnedFromNativeFunctionIsNotClosedAsynchronously() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+            var callCount = 0
+            val a = JsObject(context)
+            val b = JsObject(context)
+            a["b"] = b
+            context.globalThis["f"] =
+                JsFunction(context) {
+                    callCount++
+                    a
+                }
+
+            val result = awaitPromise(context.evaluateScript("(async () => await f())()"))
+            eventLoop.runAndComplete()
+
+            assertEquals(1, callCount)
+            assertEquals(a, result.await())
+            a["c"] = JsNumber(context, 1)
+            a["d"] = JsNumber(context, 2)
+        }
+
+    @Test
+    fun returnsJsErrorObjectAndConvertsItToJsExceptionAsynchronously() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+            val exception = RuntimeException("my error message")
+            context.globalThis["f"] =
+                JsFunction(context) {
+                    JsObject(exception)
+                }
+
+            val error = awaitPromise(context.evaluateScript("(async () => await f(1, 2))()"))
+            eventLoop.runAndComplete()
+            val errorValue = error.await()
+            assertIs<JsObject>(errorValue)
+            context.globalThis["error"] = errorValue
+            assertEquals(JsBoolean(context, true), context.evaluateScript("error instanceof Error"))
+            val e = JsException(errorValue)
+            assertEquals("Error", e.name)
+            assertEquals("my error message", e.message)
+            assertEquals(exception, e.cause)
+            assertEquals(emptyMap(), e.data)
+        }
 
     @Test
     fun callsFunctionAsConstructor() {
@@ -787,4 +894,24 @@ class JsContextTest {
             assertNull(a2.getTag("nativeObject"))
         }
     }
+
+    @Test
+    fun keepsNativeFunctionCallbackAfterNativeWrapperIsClosedWhileJsRetainsFunction() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+            var callCount = 0
+            val f =
+                JsFunction(context) {
+                    callCount++
+                    JsNumber(context, 7)
+                }
+            context.globalThis["f"] = f
+            f.close()
+
+            val result = awaitPromise(context.evaluateScript("f()"), checkType = false)
+            eventLoop.runAndComplete()
+
+            assertEquals(1, callCount)
+            assertEquals(JsNumber(context, 7), result.await())
+        }
 }

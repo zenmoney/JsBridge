@@ -4,7 +4,7 @@ expect sealed interface JsArray : JsObject {
     val size: Int
 }
 
-internal expect fun JsArray.getValue(index: Int): JsValue
+internal fun JsArray.getValue(index: Int): JsValue = context.getObjectValue(this, index)
 
 internal fun JsArray(
     context: JsContext,
