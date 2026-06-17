@@ -236,6 +236,12 @@ abstract class JsContextTest {
         context.globalThis["arr"] = arr1
         val arr2 = context.globalThis.getValue("arr")
         assertIs<JsUint8Array>(arr2)
+        assertEquals(arr1, arr2)
+        assertEquals(arr1.hashCode(), arr2.hashCode())
+        val arr3 = context.evaluateScript("Uint8Array.from([1, 2, 3, 127, 128, 255])")
+        assertIs<JsUint8Array>(arr3)
+        assertNotEquals(arr1, arr3)
+        assertNotEquals(arr2, arr3)
         val isEqual =
             context.evaluateScript(
                 """
@@ -440,6 +446,32 @@ abstract class JsContextTest {
                 )
             }
             eventLoop.runAndComplete()
+        }
+
+    @Test
+    fun clearsTimeoutByReturnedId() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+            context.evaluateScript(
+                """
+                var timeoutCallCount = 0;
+                const cancelledTimeoutId = setTimeout(() => {
+                    timeoutCallCount += 1;
+                }, 50);
+                if (typeof cancelledTimeoutId !== "number") {
+                    throw new Error("setTimeout must return a number");
+                }
+                clearTimeout(cancelledTimeoutId);
+                setTimeout(() => {
+                    timeoutCallCount += 2;
+                }, 50);
+                """.trimIndent(),
+            )
+            eventLoop.runAndComplete()
+            assertEquals(JsNumber(context, 2), context.evaluateScript("timeoutCallCount"))
         }
 
     @Test

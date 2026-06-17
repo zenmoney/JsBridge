@@ -1,5 +1,9 @@
 package app.zenmoney.jsbridge
 
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.concurrent.atomics.incrementAndFetch
+
 expect sealed class JsContext(
     unit: Unit,
 ) : AutoCloseable {
@@ -162,6 +166,9 @@ class JsPlainValueState internal constructor() {
     }
 }
 
+@OptIn(ExperimentalAtomicApi::class)
+private val index = AtomicInt(0)
+
 internal class JsContextCore(
     context: JsContext,
 ) : AutoCloseable {
@@ -169,6 +176,9 @@ internal class JsContextCore(
     internal var _scope: JsScope? = JsScope().also { it._context = context }
     var scopeValuesPool: MutableList<ArrayList<AutoCloseable>>? = arrayListOf()
     var eventLoop: JsEventLoop? = null
+
+    @OptIn(ExperimentalAtomicApi::class)
+    val id = index.incrementAndFetch()
 
     private var tag: Any? = null
     private var tagReader: JsFunction? = null

@@ -1,7 +1,7 @@
 package app.zenmoney.jsbridge
 
-import androidx.collection.mutableIntObjectMapOf
 import androidx.collection.mutableObjectListOf
+import androidx.collection.mutableScatterMapOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -45,53 +45,84 @@ class JsEventLoop(
             job +
             CoroutineExceptionHandler { _, _ -> }
 
-    private var i = 0
-    private val timeoutJobs = mutableIntObjectMapOf<Job>()
-    private val intervalJobs = mutableIntObjectMapOf<Job>()
+    private val timeoutJobs = mutableScatterMapOf<String, Job>()
+    private val intervalJobs = mutableScatterMapOf<String, Job>()
     private val nextTickCallbacks = mutableObjectListOf<Pair<JsFunction, List<JsValue>>>()
-    private var immediateCallbacks = mutableIntObjectMapOf<Pair<JsFunction, List<JsValue>>>()
+    private var immediateCallbacks = mutableScatterMapOf<String, Pair<JsFunction, List<JsValue>>>()
 
     fun attachTo(context: JsContext) {
         require(context.core.eventLoop == null || context.core.eventLoop == this) { "JsContext already has an event loop" }
         context.core.eventLoop = this
         jsScoped(context) {
-            context.globalThis["process"]
-                .autoClose()
-                .let {
-                    when (it) {
-                        context.NULL,
-                        context.UNDEFINED,
-                        -> JsObject().also { process -> context.globalThis["process"] = process }
-
-                        is JsObject -> it
-
-                        else -> null
-                    }
-                }?.let { process ->
-                    process["nextTick"] =
-                        JsFunction {
-                            nextTick(it)
-                            context.UNDEFINED
+            context.globalThis["__appZenmoneyEventLoopOnEvent"] =
+                JsFunction {
+                    val event = it.getOrNull(0).toString()
+                    var args = it.subList(1, it.size)
+                    when (event) {
+                        "nextTick" -> {
+                            nextTick(args)
                         }
+
+                        "clearImmediate" -> {
+                            clearImmediate(args)
+                        }
+
+                        "clearInterval" -> {
+                            clearInterval(args)
+                        }
+
+                        "clearTimeout" -> {
+                            clearTimeout(args)
+                        }
+
+                        else -> {
+                            val id =
+                                it.getOrNull(1)?.toCallbackId()
+                                    ?: throw IllegalArgumentException("unexpected event loop event")
+                            args = it.subList(2, it.size)
+                            when (event) {
+                                "setImmediate" -> setImmediate(args, id)
+                                "setInterval" -> setInterval(args, id)
+                                "setTimeout" -> setTimeout(args, id)
+                                else -> throw IllegalArgumentException("unexpected event loop event")
+                            }
+                        }
+                    }
+                    JsUndefined()
                 }
-            context.globalThis["clearImmediate"] =
-                JsFunction {
-                    clearImmediate(it)
-                    context.UNDEFINED
-                }
-            context.globalThis["clearInterval"] =
-                JsFunction {
-                    clearInterval(it)
-                    context.UNDEFINED
-                }
-            context.globalThis["clearTimeout"] =
-                JsFunction {
-                    clearTimeout(it)
-                    context.UNDEFINED
-                }
-            context.globalThis["setImmediate"] = JsFunction { setImmediate(it) }
-            context.globalThis["setInterval"] = JsFunction { setInterval(it) }
-            context.globalThis["setTimeout"] = JsFunction { setTimeout(it) }
+            eval(
+                """
+                globalThis.__appZenmoneyEventLoopOnEvent.index = __appZenmoneyEventLoopOnEvent.index || 0;
+                globalThis.clearImmediate = function clearImmediate() {
+                     __appZenmoneyEventLoopOnEvent("clearImmediate", ...arguments);
+                };
+                globalThis.clearInterval = function clearInterval() {
+                    __appZenmoneyEventLoopOnEvent("clearInterval", ...arguments);
+                };
+                globalThis.clearTimeout = function clearTimeout () {
+                    __appZenmoneyEventLoopOnEvent("clearTimeout", ...arguments);
+                };
+                globalThis.setImmediate = function setImmediate () {
+                    const i = __appZenmoneyEventLoopOnEvent.index++;
+                    __appZenmoneyEventLoopOnEvent("setImmediate", i, ...arguments);
+                    return i;
+                };
+                globalThis.setInterval = function setInterval () {
+                    const i = __appZenmoneyEventLoopOnEvent.index++;
+                    __appZenmoneyEventLoopOnEvent("setInterval", i, ...arguments);
+                    return i;
+                };
+                globalThis.setTimeout = function setTimeout () {
+                    const i = __appZenmoneyEventLoopOnEvent.index++;
+                    __appZenmoneyEventLoopOnEvent("setTimeout", i, ...arguments);
+                    return i;
+                };
+                globalThis.process = globalThis.process || {};
+                globalThis.process.nextTick = function nextTick () {
+                    __appZenmoneyEventLoopOnEvent("nextTick", ...arguments);
+                };
+                """.trimIndent(),
+            )
         }
     }
 
@@ -122,7 +153,7 @@ class JsEventLoop(
 
     private fun runImmediateCallbacks() {
         val callbacks = immediateCallbacks
-        immediateCallbacks = mutableIntObjectMapOf()
+        immediateCallbacks = mutableScatterMapOf()
         callbacks.forEachValue { (callback, args) ->
             if (!job.isActive) {
                 closeValues(callback, args)
@@ -181,7 +212,10 @@ class JsEventLoop(
         nextTickCallbacks.add(Pair(callback, args))
     }
 
-    private fun JsScope.setTimeout(args: List<JsValue>): JsNumber {
+    private fun JsScope.setTimeout(
+        args: List<JsValue>,
+        id: String,
+    ) {
         ensureActive()
         val callback = args.getOrNull(0)
         if (callback !is JsFunction) {
@@ -191,7 +225,6 @@ class JsEventLoop(
             (args.getOrNull(1) as? JsNumber)?.toNumber()?.toLong()
                 ?: throw IllegalArgumentException("The \"delay\" argument must be of type number.")
         val args = args.subList(2, args.size)
-        val id = i++
         escape(callback)
         escape(args)
         timeoutJobs[id] =
@@ -208,15 +241,17 @@ class JsEventLoop(
                     closeValues(callback, args)
                 }
             }
-        return JsNumber(id)
     }
 
     private fun clearTimeout(args: List<JsValue>) {
-        val id = (args.getOrNull(0) as? JsNumber)?.toNumber()?.toInt() ?: return
+        val id = args.getOrNull(0)?.toCallbackId() ?: return
         timeoutJobs.remove(id)?.cancel()
     }
 
-    private fun JsScope.setInterval(args: List<JsValue>): JsNumber {
+    private fun JsScope.setInterval(
+        args: List<JsValue>,
+        id: String,
+    ) {
         ensureActive()
         val callback = args.getOrNull(0)
         if (callback !is JsFunction) {
@@ -226,7 +261,6 @@ class JsEventLoop(
             (args.getOrNull(1) as? JsNumber)?.toNumber()?.toLong()
                 ?: throw IllegalArgumentException("The \"delay\" argument must be of type number.")
         val args = args.subList(2, args.size)
-        val id = i++
         escape(callback)
         escape(args)
         intervalJobs[id] =
@@ -243,34 +277,36 @@ class JsEventLoop(
                     closeValues(callback, args)
                 }
             }
-        return JsNumber(id)
     }
 
     private fun clearInterval(args: List<JsValue>) {
-        val id = (args.getOrNull(0) as? JsNumber)?.toNumber()?.toInt() ?: return
+        val id = args.getOrNull(0)?.toCallbackId() ?: return
         intervalJobs.remove(id)?.cancel()
     }
 
-    private fun JsScope.setImmediate(args: List<JsValue>): JsNumber {
+    private fun JsScope.setImmediate(
+        args: List<JsValue>,
+        id: String,
+    ) {
         ensureActive()
         val callback = args.getOrNull(0)
         if (callback !is JsFunction) {
             throw IllegalArgumentException("The \"callback\" argument must be of type function.")
         }
         val args = args.subList(1, args.size)
-        val id = i++
         escape(callback)
         escape(args)
         immediateCallbacks[id] = Pair(callback, args)
-        return JsNumber(id)
     }
 
     private fun clearImmediate(args: List<JsValue>) {
-        val id = (args.getOrNull(0) as? JsNumber)?.toNumber()?.toInt() ?: return
+        val id = args.getOrNull(0)?.toCallbackId() ?: return
         immediateCallbacks.remove(id)?.also { (callback, args) ->
             closeValues(callback, args)
         }
     }
+
+    private fun JsValue.toCallbackId(): String? = intOrNull?.let { "${context.core.id}.$it" }
 }
 
 private fun closeValues(
