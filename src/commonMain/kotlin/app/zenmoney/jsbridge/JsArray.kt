@@ -35,4 +35,4 @@ inline fun JsArray.forEach(action: JsScope.(JsValue) -> Unit) =
         }
     }
 
-fun JsArray.toPlainList(): List<Any?> = map { it.toPlainValue() }
+fun JsArray.toPlainList(): List<Any?> = context.core.toPlainList(this)

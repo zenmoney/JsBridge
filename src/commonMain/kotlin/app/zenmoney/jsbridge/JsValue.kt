@@ -52,7 +52,7 @@ fun JsValue.toJson(): String =
         stringify(this@toJson).toString()
     }
 
-fun JsValue.toPlainValue(): Any? = context.getPlainValueOf(this)
+fun JsValue.toPlainValue(): Any? = context.core.toPlainValue(this)
 
 val JsValue.isClosed: Boolean
     get() = core.scope == null
@@ -67,27 +67,30 @@ val JsValue.isScoped: Boolean
                     ?._scope
         } ?: false
 
-internal fun JsValue.toBasicPlainValue(): Any? {
-    return when (this) {
+internal fun JsScope.toBasicPlainValue(
+    value: JsValue,
+    state: JsPlainValueState,
+): Any? {
+    return when (value) {
         context.NULL,
         context.UNDEFINED,
         -> null
 
-        is JsBoolean -> return toBoolean()
+        is JsBoolean -> return value.toBoolean()
 
-        is JsNumber -> return toNumber()
+        is JsNumber -> return value.toNumber()
 
-        is JsString -> return toString()
+        is JsString -> return value.toString()
 
-        is JsDate -> return toMillis()
+        is JsDate -> return value.toMillis()
 
-        is JsUint8Array -> return toByteArray()
+        is JsUint8Array -> return value.toByteArray()
 
-        is JsArray -> return toPlainList()
+        is JsArray -> return context.core.toPlainList(value)
 
-        is JsObject -> return toPlainMap()
+        is JsObject -> return context.core.toPlainMap(value)
 
-        else -> toString()
+        else -> value.toString()
     }
 }
 

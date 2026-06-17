@@ -14,7 +14,7 @@ actual sealed class JsContext actual constructor(
     unit: Unit,
 ) : AutoCloseable {
     internal actual abstract val core: JsContextCore
-    actual abstract var getPlainValueOf: (JsValue) -> Any?
+    actual abstract var getPlainValueOf: JsScope.(value: JsValue, state: JsPlainValueState) -> Any?
     actual abstract val globalThis: JsObject
     internal actual abstract val NULL: JsNull
     internal actual abstract val UNDEFINED: JsUndefined
@@ -86,7 +86,9 @@ actual class JsEngineContext :
     actual override val core = JsContextCore(this)
     private val v8Runtime: V8 = V8.createV8Runtime()
 
-    actual override var getPlainValueOf: (JsValue) -> Any? = { it.toBasicPlainValue() }
+    actual override var getPlainValueOf: JsScope.(value: JsValue, state: JsPlainValueState) -> Any? = { value, state ->
+        toBasicPlainValue(value, state)
+    }
 
     actual override val globalThis: JsObject =
         JsObjectImpl(this, v8Runtime.executeObjectScript("this"))

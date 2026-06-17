@@ -5,7 +5,7 @@ expect sealed class JsContext(
 ) : AutoCloseable {
     internal abstract val core: JsContextCore
 
-    abstract var getPlainValueOf: (JsValue) -> Any?
+    abstract var getPlainValueOf: JsScope.(value: JsValue, state: JsPlainValueState) -> Any?
 
     abstract val globalThis: JsObject
 
@@ -77,7 +77,7 @@ expect class JsEngineContext : JsContext {
     constructor()
 
     override val core: JsContextCore
-    override var getPlainValueOf: (JsValue) -> Any?
+    override var getPlainValueOf: JsScope.(value: JsValue, state: JsPlainValueState) -> Any?
     override val globalThis: JsObject
     override val NULL: JsNull
     override val UNDEFINED: JsUndefined
@@ -143,6 +143,25 @@ expect class JsEngineContext : JsContext {
 @Suppress("FunctionName")
 fun JsContext(): JsEngineContext = JsEngineContext()
 
+class JsPlainValueState internal constructor() {
+    private val values = mutableMapOf<JsValue, Any?>()
+
+    operator fun contains(value: JsValue): Boolean = values.containsKey(value)
+
+    operator fun get(value: JsValue): Any? = values[value]
+
+    operator fun set(
+        value: JsValue,
+        plainValue: Any?,
+    ) {
+        values[value] = plainValue
+    }
+
+    fun remove(value: JsValue) {
+        values.remove(value)
+    }
+}
+
 internal class JsContextCore(
     context: JsContext,
 ) : AutoCloseable {
@@ -154,6 +173,7 @@ internal class JsContextCore(
     private var tag: Any? = null
     private var tagReader: JsFunction? = null
     private var tagSetter: JsFunction? = null
+    private var plainValueFrame: PlainValueFrame? = null
 
     val scope: JsScope
         get() = checkNotNull(_scope) { "JsContext is already closed" }
@@ -165,6 +185,21 @@ internal class JsContextCore(
     fun removeValue(value: JsValue) {
         _scope?.tryEscape(value)
     }
+
+    fun toPlainValue(value: JsValue): Any? =
+        withPlainValueState { state ->
+            toPlainValue(value, state)
+        }
+
+    fun toPlainMap(value: JsObject): Map<String, Any?> =
+        withPlainValueState { state ->
+            toPlainMap(value, state)
+        }
+
+    fun toPlainList(value: JsArray): List<Any?> =
+        withPlainValueState { state ->
+            toPlainList(value, state)
+        }
 
     fun getTag(
         jsObject: JsObject,
@@ -200,6 +235,81 @@ internal class JsContextCore(
         }
     }
 
+    private fun <T> withPlainValueState(block: JsScope.(JsPlainValueState) -> T): T {
+        plainValueFrame?.let {
+            return it.scope.block(it.state)
+        }
+        return jsScoped(scope.context) {
+            val frame = PlainValueFrame(this, JsPlainValueState())
+            plainValueFrame = frame
+            try {
+                block(frame.state)
+            } finally {
+                plainValueFrame = null
+            }
+        }
+    }
+
+    private fun JsScope.toPlainValue(
+        value: JsValue,
+        state: JsPlainValueState,
+    ): Any? {
+        if (value in state) {
+            return state[value]
+        }
+        return context.getPlainValueOf(this, value, state).also { plainValue ->
+            if (value is JsObject && plainValue.isReferencePlainValue()) {
+                state[value] = plainValue
+            }
+        }
+    }
+
+    private fun JsScope.toPlainMap(
+        value: JsObject,
+        state: JsPlainValueState,
+    ): Map<String, Any?> {
+        if (value in state) {
+            @Suppress("UNCHECKED_CAST")
+            return state[value] as Map<String, Any?>
+        }
+        val result = linkedMapOf<String, Any?>()
+        state[value] = result
+        try {
+            value.keys.forEach { property ->
+                result[property] = value[property].toPlainValue()
+            }
+            return result
+        } catch (e: Throwable) {
+            if (state[value] === result) {
+                state.remove(value)
+            }
+            throw e
+        }
+    }
+
+    private fun JsScope.toPlainList(
+        value: JsArray,
+        state: JsPlainValueState,
+    ): List<Any?> {
+        if (value in state) {
+            @Suppress("UNCHECKED_CAST")
+            return state[value] as List<Any?>
+        }
+        val result = ArrayList<Any?>(value.size)
+        state[value] = result
+        try {
+            for (index in 0 until value.size) {
+                result.add(value[index].toPlainValue())
+            }
+            return result
+        } catch (e: Throwable) {
+            if (state[value] === result) {
+                state.remove(value)
+            }
+            throw e
+        }
+    }
+
     private fun initTagReaderAndSetter(context: JsContext) {
         if (tagReader == null) {
             tagReader =
@@ -231,7 +341,15 @@ internal class JsContextCore(
         tag = null
         tagReader = null
         tagSetter = null
+        plainValueFrame = null
     }
+
+    private fun Any?.isReferencePlainValue(): Boolean = this != null && this !is Boolean && this !is Number && this !is String
+
+    private data class PlainValueFrame(
+        val scope: JsScope,
+        val state: JsPlainValueState,
+    )
 }
 
 val JsContext.isClosed: Boolean

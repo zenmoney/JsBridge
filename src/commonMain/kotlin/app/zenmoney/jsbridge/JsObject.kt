@@ -21,10 +21,7 @@ val JsObject.keys: Set<String>
             keys.mapTo(linkedSetOf()) { it.toString() }
         }
 
-fun JsObject.toPlainMap(): Map<String, Any?> =
-    keys.associateWith { key ->
-        getValue(key).use { it.toPlainValue() }
-    }
+fun JsObject.toPlainMap(): Map<String, Any?> = context.core.toPlainMap(this)
 
 fun JsObject.defineProperty(
     key: String,

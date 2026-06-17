@@ -17,6 +17,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 abstract class JsContextTest {
@@ -114,6 +115,41 @@ abstract class JsContextTest {
                 e.data,
             )
         }
+    }
+
+    @Test
+    fun toPlainValueReusesRepeatedObjectReferences() {
+        val value =
+            context.evaluateScript(
+                """
+                const child = {x: 1};
+                ({a: child, b: child});
+                """.trimIndent(),
+            )
+
+        val map = assertIs<Map<*, *>>(value.toPlainValue())
+        val a = map["a"]
+        val b = map["b"]
+
+        assertSame(a, b)
+        assertEquals(mapOf("x" to 1.0), a)
+    }
+
+    @Test
+    fun toPlainValueHandlesCircularObjectReferences() {
+        val value =
+            context.evaluateScript(
+                """
+                const value = {name: "root"};
+                value.self = value;
+                value;
+                """.trimIndent(),
+            )
+
+        val map = assertIs<Map<*, *>>(value.toPlainValue())
+
+        assertEquals("root", map["name"])
+        assertSame(map, map["self"])
     }
 
     @Test
