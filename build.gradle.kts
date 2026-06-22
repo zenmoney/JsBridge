@@ -83,6 +83,7 @@ kotlin {
         val androidDeviceTest by getting {
             dependsOn(commonTest)
             dependencies {
+                implementation("androidx.test:core:1.7.0")
                 implementation("androidx.test:runner:1.7.0")
             }
         }

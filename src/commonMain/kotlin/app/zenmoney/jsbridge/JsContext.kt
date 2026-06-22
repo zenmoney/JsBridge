@@ -214,31 +214,45 @@ internal class JsContextCore(
     fun getTag(
         jsObject: JsObject,
         key: String,
-    ): Any? =
-        jsScoped(jsObject.context) {
+    ): Any? {
+        (_scope?.context as? JsWebViewContext)?.let {
+            return it.getTag(jsObject, key)
+        }
+        return jsScoped(jsObject.context) {
             initTagReaderAndSetter(context)
             tagReader!!(jsObject, JsString(key))
             tag?.also { tag = null }
         }
+    }
 
     fun setTag(
         jsObject: JsObject,
         key: String,
         value: Any,
-    ) = jsScoped(jsObject.context) {
-        val read =
-            JsFunction {
-                context.core.tag = value
-                context.UNDEFINED
-            }
-        initTagReaderAndSetter(context)
-        tagSetter!!(jsObject, JsString(key), read)
+    ) {
+        (_scope?.context as? JsWebViewContext)?.let {
+            it.setTag(jsObject, key, value)
+            return
+        }
+        jsScoped(jsObject.context) {
+            val read =
+                JsFunction {
+                    context.core.tag = value
+                    context.UNDEFINED
+                }
+            initTagReaderAndSetter(context)
+            tagSetter!!(jsObject, JsString(key), read)
+        }
     }
 
     fun removeTag(
         jsObject: JsObject,
         key: String,
     ) {
+        (_scope?.context as? JsWebViewContext)?.let {
+            it.removeTag(jsObject, key)
+            return
+        }
         jsScoped(jsObject.context) {
             initTagReaderAndSetter(context)
             tagSetter!!(jsObject, JsString(key), context.UNDEFINED)
