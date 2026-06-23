@@ -378,3 +378,6 @@ internal class JsContextCore(
 
 val JsContext.isClosed: Boolean
     get() = core._scope == null
+
+val JsContext.eventLoop: JsEventLoop?
+    get() = core.eventLoop
