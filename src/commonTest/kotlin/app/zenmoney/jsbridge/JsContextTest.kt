@@ -583,6 +583,33 @@ abstract class JsContextTest {
         }
 
     @Test
+    fun nativeFunctionCanReadMethodReceiverAfterNativeWrapperIsClosedAsynchronously() =
+        runTest {
+            val eventLoop = attachEventLoop(this)
+
+            val promise =
+                jsScoped(context) {
+                    val obj = eval("globalThis.ZenMoney = {}; globalThis.ZenMoney") as JsObject
+                    obj["callback"] =
+                        JsFunction {
+                            (thiz as JsObject)["data"]
+                        }
+                    eval(
+                        """
+                        (async () => {
+                            ZenMoney.data = 42;
+                            return await ZenMoney.callback();
+                        })()
+                        """.trimIndent(),
+                    ).escape()
+                }
+            val result = awaitPromise(promise)
+            eventLoop.runAndComplete()
+
+            assertEquals(JsNumber(context, 42), result.await())
+        }
+
+    @Test
     fun callsNativeFunctionReturningArrayOfObjectsAsynchronously() =
         runTest {
             val eventLoop = attachEventLoop(this)

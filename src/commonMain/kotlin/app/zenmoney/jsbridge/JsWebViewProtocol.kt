@@ -694,6 +694,8 @@ internal val jsWebViewRuntimeScript: String =
         const handles = new Map();
         const objectHandles = new WeakMap();
         const pendingNativeCallbacks = new Map();
+        const pendingNativeCallbackHandleRefCounts = new Map();
+        const releasedHandles = new Set();
         const errorPosted = Symbol("errorPosted");
         const finalizationRegistry = typeof FinalizationRegistry === "function"
             ? new FinalizationRegistry(handle => {
@@ -762,11 +764,46 @@ internal val jsWebViewRuntimeScript: String =
             return encodedHandle % handleTypeFactor;
         }
 
+        function retainNativeCallbackHandle(value, retainedHandles) {
+            if ((typeof value !== "object" || value === null) && typeof value !== "function") return;
+            const handle = objectHandles.get(value);
+            if (handle === undefined || handle === 0) return;
+            pendingNativeCallbackHandleRefCounts.set(
+                handle,
+                (pendingNativeCallbackHandleRefCounts.get(handle) || 0) + 1
+            );
+            retainedHandles.push(handle);
+        }
+
+        function releaseNativeCallbackHandles(retainedHandles) {
+            for (const handle of retainedHandles) {
+                const count = pendingNativeCallbackHandleRefCounts.get(handle);
+                if (count === undefined) continue;
+                if (count <= 1) {
+                    pendingNativeCallbackHandleRefCounts.delete(handle);
+                    if (releasedHandles.delete(handle)) {
+                        handles.delete(handle);
+                    }
+                } else {
+                    pendingNativeCallbackHandleRefCounts.set(handle, count - 1);
+                }
+            }
+        }
+
+        function releaseHandle(handle) {
+            if (pendingNativeCallbackHandleRefCounts.has(handle)) {
+                releasedHandles.add(handle);
+            } else {
+                handles.delete(handle);
+            }
+        }
+
         function register(value) {
             if ((typeof value === "object" && value !== null) || typeof value === "function") {
                 const existingHandle = objectHandles.get(value);
                 if (existingHandle !== undefined) {
                     handles.set(existingHandle, value);
+                    releasedHandles.delete(existingHandle);
                     return '[${JsWebViewProtocolCode.VALUE_HANDLE.toJson()},' +
                         encodeHandle(existingHandle, typeOf(value)) + ']';
                 }
@@ -838,11 +875,15 @@ internal val jsWebViewRuntimeScript: String =
             return register(value);
         }
 
-        function toResultList(values) {
+        function toResultList(values, retainedHandles) {
             let result = "[";
             for (let i = 0; i < values.length; i++) {
                 if (i !== 0) result += ",";
-                result += toResult(values[i]);
+                const value = values[i];
+                result += toResult(value);
+                if (retainedHandles) {
+                    retainNativeCallbackHandle(value, retainedHandles);
+                }
             }
             return result + "]";
         }
@@ -885,12 +926,14 @@ internal val jsWebViewRuntimeScript: String =
                         const callbackId = command[1];
                         const f = function (...args) {
                             const nativeCallbackId = nextNativeCallback++;
+                            const retainedHandles = [];
                             const promise = new Promise((resolve, reject) => {
-                                pendingNativeCallbacks.set(nativeCallbackId, { resolve, reject });
+                                pendingNativeCallbacks.set(nativeCallbackId, { resolve, reject, retainedHandles });
                             });
                             try {
                                 const thiz = toResult(this);
-                                const callbackArgs = toResultList(args);
+                                retainNativeCallbackHandle(this, retainedHandles);
+                                const callbackArgs = toResultList(args, retainedHandles);
                                 deferToNativeTimer(() => {
                                     try {
                                         post(
@@ -902,12 +945,14 @@ internal val jsWebViewRuntimeScript: String =
                                         const callback = pendingNativeCallbacks.get(nativeCallbackId);
                                         if (callback) {
                                             pendingNativeCallbacks.delete(nativeCallbackId);
+                                            releaseNativeCallbackHandles(callback.retainedHandles);
                                             callback.reject(error);
                                         }
                                     }
                                 }, 0);
                             } catch (error) {
                                 pendingNativeCallbacks.delete(nativeCallbackId);
+                                releaseNativeCallbackHandles(retainedHandles);
                                 promise.catch(() => {});
                                 return Promise.reject(error);
                             }
@@ -954,7 +999,7 @@ internal val jsWebViewRuntimeScript: String =
                         return toResult(value);
                     }
                     case ${JsWebViewProtocolCode.COMMAND_RELEASE.toJson()}:
-                        handles.delete(command[1]);
+                        releaseHandle(command[1]);
                         return '[${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}]';
                     default:
                         throw new Error("Unknown JsWebView command " + command[0]);
@@ -1020,6 +1065,8 @@ internal val jsWebViewRuntimeScript: String =
                     }
                 } catch (e) {
                     callback.reject(e);
+                } finally {
+                    releaseNativeCallbackHandles(callback.retainedHandles);
                 }
             },
         };
