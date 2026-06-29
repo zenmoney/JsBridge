@@ -1,10 +1,9 @@
 package app.zenmoney.jsbridge
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestResult
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -19,6 +18,13 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+
+suspend fun JsValue.awaitEscaped(checkType: Boolean = true): JsValue {
+    if (checkType) {
+        assertIs<JsPromise>(this)
+    }
+    return jsScoped(context) { await().escape() }
+}
 
 abstract class JsContextTest {
     protected lateinit var context: JsContext
@@ -37,47 +43,23 @@ abstract class JsContextTest {
 
     abstract fun createContext(): JsContext
 
-    private fun attachEventLoop(coroutineScope: CoroutineScope): JsEventLoop =
-        JsEventLoop(coroutineScope.coroutineContext).apply {
-            attachTo(context)
-        }
-
-    private fun CoroutineScope.awaitPromise(
-        value: JsValue,
-        checkType: Boolean = true,
-    ): Deferred<JsValue> {
-        if (checkType) {
-            assertIs<JsPromise>(value)
-        }
-        val scope = JsScope(context)
-        return async {
-            try {
-                with(scope) {
-                    value.await().escape()
+    fun runTestWithEventLoop(testBody: suspend TestScope.(eventLoop: JsEventLoop) -> Unit): TestResult =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(this@JsContextTest.context)
                 }
-            } finally {
-                scope.close()
-            }
+            val testJob =
+                launch {
+                    testBody(eventLoop)
+                }
+            val eventLoopJob =
+                launch {
+                    eventLoop.runAndComplete()
+                }
+            testJob.join()
+            eventLoopJob.join()
         }
-    }
-
-    private fun CoroutineScope.awaitPromiseResult(value: JsValue): Deferred<Result<JsValue>> {
-        assertIs<JsPromise>(value)
-        val scope = JsScope(context)
-        return async {
-            try {
-                Result.success(
-                    with(scope) {
-                        value.await().escape()
-                    },
-                )
-            } catch (e: Throwable) {
-                Result.failure(e)
-            } finally {
-                scope.close()
-            }
-        }
-    }
 
     @Test
     fun globalObjectEqualsGlobalThis() {
@@ -394,11 +376,7 @@ abstract class JsContextTest {
 
     @Test
     fun resolvesPromiseValue() =
-        runTest {
-            val eventLoop =
-                JsEventLoop(coroutineContext).apply {
-                    attachTo(context)
-                }
+        runTestWithEventLoop {
             val result =
                 context.evaluateScript(
                     """
@@ -408,17 +386,12 @@ abstract class JsContextTest {
                     """.trimIndent(),
                 )
             assertIs<JsObject>(result)
-            assertEquals(JsNumber(context, 5), jsScoped(context) { result.await().escape() })
-            eventLoop.runAndComplete()
+            assertEquals(JsNumber(context, 5), result.awaitEscaped())
         }
 
     @Test
     fun throwsJsExceptionOnPromiseError() =
-        runTest {
-            val eventLoop =
-                JsEventLoop(coroutineContext).apply {
-                    attachTo(context)
-                }
+        runTestWithEventLoop {
             val result =
                 context.evaluateScript(
                     """
@@ -435,7 +408,7 @@ abstract class JsContextTest {
                 )
             assertIs<JsObject>(result)
             try {
-                jsScoped(context) { result.await() }
+                result.awaitEscaped()
                 assertTrue(false)
             } catch (e: JsException) {
                 assertEquals("Error", e.name)
@@ -445,16 +418,11 @@ abstract class JsContextTest {
                     e.data,
                 )
             }
-            eventLoop.runAndComplete()
         }
 
     @Test
     fun clearsTimeoutByReturnedId() =
-        runTest {
-            val eventLoop =
-                JsEventLoop(coroutineContext).apply {
-                    attachTo(context)
-                }
+        runTestWithEventLoop { eventLoop ->
             context.evaluateScript(
                 """
                 var timeoutCallCount = 0;
@@ -470,17 +438,13 @@ abstract class JsContextTest {
                 }, 50);
                 """.trimIndent(),
             )
-            eventLoop.runAndComplete()
+            eventLoop.run()
             assertEquals(JsNumber(context, 2), context.evaluateScript("timeoutCallCount"))
         }
 
     @Test
     fun callsNativeAsyncFunction() =
-        runTest {
-            val eventLoop =
-                JsEventLoop(coroutineContext).apply {
-                    attachTo(context)
-                }
+        runTestWithEventLoop { eventLoop ->
             context.globalThis["f"] =
                 JsFunction(context) {
                     JsPromise {
@@ -492,15 +456,14 @@ abstract class JsContextTest {
             assertIs<JsArray>(a)
             assertEquals(1, a.size)
             assertEquals(JsNumber(context, 1), a.getValue(0))
-            eventLoop.runAndComplete()
+            eventLoop.run()
             assertEquals(2, a.size)
             assertEquals(JsNumber(context, 5), a.getValue(1))
         }
 
     @Test
     fun callsNativeFunctionWithoutArgumentsAsynchronously() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
+        runTestWithEventLoop { eventLoop ->
             var callCount = 0
             val value =
                 JsFunction(context) {
@@ -510,18 +473,17 @@ abstract class JsContextTest {
                 }
             context.globalThis["f"] = value
 
-            val result = awaitPromise(context.evaluateScript("(async () => await f())()"))
-            eventLoop.runAndComplete()
+            val result = context.evaluateScript("(async () => await f())()")
+            eventLoop.run()
 
             assertEquals(1, callCount)
-            assertEquals(JsNumber(context, 3), result.await())
+            assertEquals(JsNumber(context, 3), result.awaitEscaped())
             assertEquals(value, context.createValueAlias(value))
         }
 
     @Test
     fun callsNativeFunctionAsynchronously() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
+        runTestWithEventLoop { eventLoop ->
             var callCount = 0
             context.globalThis["f"] =
                 JsFunction(context) {
@@ -538,17 +500,16 @@ abstract class JsContextTest {
                     JsNumber(context, 5)
                 }
 
-            val result = awaitPromise(context.evaluateScript("(async () => await f(1, null, undefined, 2))()"))
-            eventLoop.runAndComplete()
+            val result = context.evaluateScript("(async () => await f(1, null, undefined, 2))()")
+            eventLoop.run()
 
             assertEquals(1, callCount)
-            assertEquals(JsNumber(context, 5), result.await())
+            assertEquals(JsNumber(context, 5), result.awaitEscaped())
         }
 
     @Test
     fun callsNativeFunctionWithGivenThisAsynchronously() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
+        runTestWithEventLoop { eventLoop ->
             var callCount = 0
             var thiz: JsValue? = null
             var args: List<JsValue>? = null
@@ -565,8 +526,8 @@ abstract class JsContextTest {
                     JsNumber(context, 5)
                 }
 
-            val result = awaitPromise(context.evaluateScript("(async () => await obj.f(1, 2, a, b))()"))
-            eventLoop.runAndComplete()
+            val result = context.evaluateScript("(async () => await obj.f(1, 2, a, b))()")
+            eventLoop.run()
 
             assertEquals(1, callCount)
             assertEquals(
@@ -579,15 +540,13 @@ abstract class JsContextTest {
                 args,
             )
             assertEquals(obj, thiz)
-            assertEquals(JsNumber(context, 5), result.await())
+            assertEquals(JsNumber(context, 5), result.awaitEscaped())
         }
 
     @Test
     fun nativeFunctionCanReadMethodReceiverAfterNativeWrapperIsClosedAsynchronously() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
-
-            val promise =
+        runTestWithEventLoop {
+            val result =
                 jsScoped(context) {
                     val obj = eval("globalThis.ZenMoney = {}; globalThis.ZenMoney") as JsObject
                     obj["callback"] =
@@ -603,16 +562,12 @@ abstract class JsContextTest {
                         """.trimIndent(),
                     ).escape()
                 }
-            val result = awaitPromise(promise)
-            eventLoop.runAndComplete()
-
-            assertEquals(JsNumber(context, 42), result.await())
+            assertEquals(JsNumber(context, 42), result.awaitEscaped())
         }
 
     @Test
     fun callsNativeFunctionReturningArrayOfObjectsAsynchronously() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
+        runTestWithEventLoop { eventLoop ->
             var callCount = 0
             val array =
                 JsArray(
@@ -625,9 +580,9 @@ abstract class JsContextTest {
                     array
                 }
 
-            val result = awaitPromise(context.evaluateScript("(async () => await f())()"))
-            eventLoop.runAndComplete()
-            val arrayResult = result.await()
+            val result = context.evaluateScript("(async () => await f())()")
+            eventLoop.run()
+            val arrayResult = result.awaitEscaped()
 
             assertEquals(1, callCount)
             assertIs<JsArray>(arrayResult)
@@ -642,8 +597,7 @@ abstract class JsContextTest {
 
     @Test
     fun callsNativeFunctionAsConstructorAsynchronously() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
+        runTestWithEventLoop { eventLoop ->
             var callCount = 0
             var thiz: JsValue? = null
             context.globalThis["f"] =
@@ -663,28 +617,25 @@ abstract class JsContextTest {
                 }
 
             val result =
-                awaitPromise(
-                    context.evaluateScript(
-                        """
-                        (async () => {
-                            const result = new f(1, null, undefined, 2);
-                            if (result instanceof Promise) await result;
-                        })()
-                        """.trimIndent(),
-                    ),
+                context.evaluateScript(
+                    """
+                    (async () => {
+                        const result = new f(1, null, undefined, 2);
+                        if (result instanceof Promise) await result;
+                    })()
+                    """.trimIndent(),
                 )
-            eventLoop.runAndComplete()
+            eventLoop.run()
 
             assertEquals(1, callCount)
             assertIs<JsObject>(thiz)
             assertNotEquals(context.globalThis, thiz)
-            assertEquals(context.UNDEFINED, result.await())
+            assertEquals(context.UNDEFINED, result.awaitEscaped())
         }
 
     @Test
     fun throwsJsExceptionWithNativeExceptionCauseAsynchronously() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
+        runTestWithEventLoop { eventLoop ->
             val exception = RuntimeException("my error message")
             val f =
                 JsFunction(context) {
@@ -692,38 +643,33 @@ abstract class JsContextTest {
                 }
             context.globalThis["f"] = f
 
-            val result = awaitPromiseResult(context.evaluateScript("(async () => await f(1, 2))()"))
-            eventLoop.run()
-            val e = assertIs<JsException>(result.await().exceptionOrNull())
+            var result = context.evaluateScript("(async () => await f(1, 2))()")
+            var e = assertIs<JsException>(runCatching { result.awaitEscaped() }.exceptionOrNull())
             assertEquals("Error", e.name)
             assertEquals("my error message", e.message)
             assertEquals(exception, e.cause)
             assertEquals(emptyMap(), e.data)
 
             val asyncF = context.evaluateScript("(async (...args) => await f(...args))") as JsFunction
-            val promise = asyncF.call(listOf(JsNumber(context, 1), JsNumber(context, 2)))
-            val promiseResult = awaitPromiseResult(promise)
-            eventLoop.runAndComplete()
-            val promiseException = assertIs<JsException>(promiseResult.await().exceptionOrNull())
-            assertEquals("Error", promiseException.name)
-            assertEquals("my error message", promiseException.message)
-            assertEquals(exception, promiseException.cause)
-            assertEquals(emptyMap(), promiseException.data)
+            result = asyncF.call(listOf(JsNumber(context, 1), JsNumber(context, 2)))
+            e = assertIs<JsException>(runCatching { result.awaitEscaped() }.exceptionOrNull())
+            assertEquals("Error", e.name)
+            assertEquals("my error message", e.message)
+            assertEquals(exception, e.cause)
+            assertEquals(emptyMap(), e.data)
         }
 
     @Test
     fun throwsJsExceptionWithNativeExceptionCauseWithEmptyMessageAsynchronously() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
+        runTestWithEventLoop {
             val exception = NullPointerException()
             context.globalThis["f"] =
                 JsFunction(context) {
                     throw exception
                 }
 
-            val result = awaitPromiseResult(context.evaluateScript("(async () => await f(1, 2))()"))
-            eventLoop.runAndComplete()
-            val e = assertIs<JsException>(result.await().exceptionOrNull())
+            val result = context.evaluateScript("(async () => await f(1, 2))()")
+            val e = assertIs<JsException>(runCatching { result.awaitEscaped() }.exceptionOrNull())
 
             assertEquals("Error", e.name)
             assertEquals(exception, e.cause)
@@ -732,8 +678,7 @@ abstract class JsContextTest {
 
     @Test
     fun catchesNativeExceptionAsynchronously() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
+        runTestWithEventLoop {
             val exception = RuntimeException("my error message")
             context.globalThis["f"] =
                 JsFunction(context) {
@@ -741,21 +686,18 @@ abstract class JsContextTest {
                 }
 
             val error =
-                awaitPromise(
-                    context.evaluateScript(
-                        """
-                        (async () => {
-                            try {
-                                await f(1, 2);
-                            } catch (e) {
-                                return e;
-                            }
-                        })()
-                        """.trimIndent(),
-                    ),
+                context.evaluateScript(
+                    """
+                    (async () => {
+                        try {
+                            await f(1, 2);
+                        } catch (e) {
+                            return e;
+                        }
+                    })()
+                    """.trimIndent(),
                 )
-            eventLoop.runAndComplete()
-            val e = JsException(error.await())
+            val e = JsException(error.awaitEscaped())
 
             assertEquals("Error", e.name)
             assertEquals("my error message", e.message)
@@ -765,18 +707,14 @@ abstract class JsContextTest {
 
     @Test
     fun rejectsPromiseWhenNativeExecutorThrows() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
+        runTestWithEventLoop {
             val exception = RuntimeException("executor failed")
-            val promise =
+            val result =
                 JsPromise(context) { _, _ ->
                     throw exception
                 }
-            val result = awaitPromiseResult(promise)
 
-            eventLoop.runAndComplete()
-
-            val e = assertIs<JsException>(result.await().exceptionOrNull())
+            val e = assertIs<JsException>(runCatching { result.awaitEscaped() }.exceptionOrNull())
             assertEquals("Error", e.name)
             assertEquals("executor failed", e.message)
             assertEquals(exception, e.cause)
@@ -784,8 +722,7 @@ abstract class JsContextTest {
 
     @Test
     fun objectReturnedFromNativeFunctionIsNotClosedAsynchronously() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
+        runTestWithEventLoop { eventLoop ->
             var callCount = 0
             val a = JsObject(context)
             val b = JsObject(context)
@@ -796,28 +733,26 @@ abstract class JsContextTest {
                     a
                 }
 
-            val result = awaitPromise(context.evaluateScript("(async () => await f())()"))
-            eventLoop.runAndComplete()
+            val result = context.evaluateScript("(async () => await f())()")
+            eventLoop.run()
 
             assertEquals(1, callCount)
-            assertEquals(a, result.await())
+            assertEquals(a, result.awaitEscaped())
             a["c"] = JsNumber(context, 1)
             a["d"] = JsNumber(context, 2)
         }
 
     @Test
     fun returnsJsErrorObjectAndConvertsItToJsExceptionAsynchronously() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
+        runTestWithEventLoop {
             val exception = RuntimeException("my error message")
             context.globalThis["f"] =
                 JsFunction(context) {
                     JsObject(exception)
                 }
 
-            val error = awaitPromise(context.evaluateScript("(async () => await f(1, 2))()"))
-            eventLoop.runAndComplete()
-            val errorValue = error.await()
+            val error = context.evaluateScript("(async () => await f(1, 2))()")
+            val errorValue = error.awaitEscaped()
             assertIs<JsObject>(errorValue)
             context.globalThis["error"] = errorValue
             assertEquals(JsBoolean(context, true), context.evaluateScript("error instanceof Error"))
@@ -875,11 +810,7 @@ abstract class JsContextTest {
 
     @Test
     fun callsOnCompletionListenerWhenEventLoopHasRunAndCompleted() =
-        runTest {
-            val eventLoop =
-                JsEventLoop(coroutineContext).apply {
-                    attachTo(context)
-                }
+        runTestWithEventLoop { eventLoop ->
             var isCancelled: Boolean? = null
             var e: Throwable? = null
             eventLoop.onCompletion = { cancelled, exception ->
@@ -893,11 +824,7 @@ abstract class JsContextTest {
 
     @Test
     fun callsOnCompletionListenerWhenEventLoopIsCancelled() =
-        runTest {
-            val eventLoop =
-                JsEventLoop(coroutineContext).apply {
-                    attachTo(context)
-                }
+        runTestWithEventLoop { eventLoop ->
             var isCancelled: Boolean? = null
             var e: Throwable? = null
             eventLoop.onCompletion = { cancelled, exception ->
@@ -911,11 +838,7 @@ abstract class JsContextTest {
 
     @Test
     fun callsOnCompletionListenerWhenEventLoopIsCancelledBecauseOfException() =
-        runTest {
-            val eventLoop =
-                JsEventLoop(coroutineContext).apply {
-                    attachTo(context)
-                }
+        runTestWithEventLoop { eventLoop ->
             var isCancelled: Boolean? = null
             var e: Throwable? = null
             eventLoop.onCompletion = { cancelled, exception ->
@@ -992,8 +915,7 @@ abstract class JsContextTest {
 
     @Test
     fun keepsNativeFunctionCallbackAfterNativeWrapperIsClosedWhileJsRetainsFunction() =
-        runTest {
-            val eventLoop = attachEventLoop(this)
+        runTestWithEventLoop { eventLoop ->
             var callCount = 0
             val f =
                 JsFunction(context) {
@@ -1003,10 +925,10 @@ abstract class JsContextTest {
             context.globalThis["f"] = f
             f.close()
 
-            val result = awaitPromise(context.evaluateScript("f()"), checkType = false)
-            eventLoop.runAndComplete()
+            val result = context.evaluateScript("f()")
+            eventLoop.run()
 
             assertEquals(1, callCount)
-            assertEquals(JsNumber(context, 7), result.await())
+            assertEquals(JsNumber(context, 7), result.awaitEscaped(checkType = false))
         }
 }
