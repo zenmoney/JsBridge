@@ -3,10 +3,11 @@ package app.zenmoney.jsbridge
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import kotlin.coroutines.suspendCoroutine
 
 expect sealed interface JsPromise : JsObject
 
@@ -73,14 +74,22 @@ fun JsScope.JsPromise(
     return promise
 }
 
-internal suspend fun JsValue.awaitInScope(scope: JsScope): JsValue {
+internal suspend fun JsValue.awaitInScope(scope: JsScope): JsValue =
+    context.core.eventLoop
+        .checkNotNull()
+        .async { runCatching { _awaitInScope(scope) } }
+        .await()
+        .fold({ it }, { throw it })
+
+@Suppress("FunctionName")
+private suspend fun JsValue._awaitInScope(scope: JsScope): JsValue {
     val thiz = this
     return with(scope) {
         var value = thiz
         while (true) {
             val then = (value as? JsObject)?.get("then") as? JsFunction ?: break
             value =
-                suspendCoroutine { cont ->
+                suspendCancellableCoroutine { cont ->
                     then(
                         JsFunction {
                             cont.resume(it.firstOrNull()?.escape()?.also { value -> scope.autoClose(value) } ?: context.UNDEFINED)
