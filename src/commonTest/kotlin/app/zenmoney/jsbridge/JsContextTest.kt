@@ -443,6 +443,29 @@ abstract class JsContextTest {
         }
 
     @Test
+    fun clearsTimeoutsAndIntervalsWithEitherClearFunction() =
+        runTestWithEventLoop { eventLoop ->
+            context.evaluateScript(
+                """
+                var timerCallOrder = [];
+                const cancelledIntervalId = setInterval(() => {
+                    timerCallOrder.push("interval");
+                }, 50);
+                clearTimeout(cancelledIntervalId);
+                const cancelledTimeoutId = setTimeout(() => {
+                    timerCallOrder.push("timeout");
+                }, 50);
+                clearInterval(cancelledTimeoutId);
+                setTimeout(() => {
+                    timerCallOrder.push("kept");
+                }, 50);
+                """.trimIndent(),
+            )
+            eventLoop.run()
+            assertEquals(JsString(context, "kept"), context.evaluateScript("timerCallOrder.join(',')"))
+        }
+
+    @Test
     fun callsNativeAsyncFunction() =
         runTestWithEventLoop { eventLoop ->
             context.globalThis["f"] =
@@ -459,6 +482,156 @@ abstract class JsContextTest {
             eventLoop.run()
             assertEquals(2, a.size)
             assertEquals(JsNumber(context, 5), a.getValue(1))
+        }
+
+    @Test
+    fun runsPromiseAllThenChainBeforeEventLoopCompletion() =
+        runTestWithEventLoop { eventLoop ->
+            val callArgs = arrayListOf<Int>()
+            var isPromiseAllCompleted = false
+            var isEventLoopCompleted = false
+            eventLoop.onCompletion = { isCancelled, exception ->
+                assertFalse(isCancelled)
+                assertNull(exception)
+                assertEquals(listOf(1, 2, 3), callArgs)
+                assertTrue(isPromiseAllCompleted)
+                isEventLoopCompleted = true
+            }
+            context.globalThis["f"] =
+                JsFunction(context) { args ->
+                    callArgs.add(assertIs<JsNumber>(args.single()).toNumber().toInt())
+                    JsUndefined()
+                }
+            context.globalThis["complete"] =
+                JsFunction(context) {
+                    isPromiseAllCompleted = true
+                    JsUndefined()
+                }
+            context.evaluateScript(
+                """
+                Promise.all([f(1), f(2), f(3)])
+                    .then(() => {})
+                    .then(() => { globalThis.complete() });
+                """.trimIndent(),
+            )
+            eventLoop.runAndComplete()
+            assertTrue(isEventLoopCompleted)
+        }
+
+    @Test
+    fun runsNextTickCallbacksBeforeImmediateCallbacks() =
+        runTestWithEventLoop { eventLoop ->
+            context.evaluateScript(
+                """
+                globalThis.order = [];
+                setImmediate(() => order.push("immediate"));
+                process.nextTick(() => {
+                    order.push("tick1");
+                    process.nextTick(() => order.push("tick2"));
+                });
+                """.trimIndent(),
+            )
+
+            eventLoop.runAndComplete()
+
+            assertEquals(
+                JsString(context, "tick1,tick2,immediate"),
+                context.evaluateScript("order.join(',')"),
+            )
+        }
+
+    @Test
+    fun runsPromiseMicrotasksQueuedByNextTickBeforeImmediateCallbacks() =
+        runTestWithEventLoop { eventLoop ->
+            context.evaluateScript(
+                """
+                globalThis.order = [];
+                setImmediate(() => order.push("immediate"));
+                process.nextTick(() => {
+                    order.push("tick");
+                    Promise.resolve().then(() => order.push("promise-after-tick"));
+                });
+                """.trimIndent(),
+            )
+
+            eventLoop.runAndComplete()
+
+            assertEquals(
+                JsString(context, "tick,promise-after-tick,immediate"),
+                context.evaluateScript("order.join(',')"),
+            )
+        }
+
+    @Test
+    fun runsPromiseMicrotasksBetweenImmediateCallbacks() =
+        runTestWithEventLoop { eventLoop ->
+            context.evaluateScript(
+                """
+                globalThis.order = [];
+                setImmediate(() => {
+                    order.push("immediate1");
+                    process.nextTick(() => order.push("tick-after-immediate1"));
+                    Promise.resolve().then(() => order.push("promise-after-immediate1"));
+                    setImmediate(() => order.push("immediate3"));
+                });
+                setImmediate(() => order.push("immediate2"));
+                """.trimIndent(),
+            )
+
+            eventLoop.runAndComplete()
+
+            assertEquals(
+                JsString(context, "immediate1,tick-after-immediate1,promise-after-immediate1,immediate2,immediate3"),
+                context.evaluateScript("order.join(',')"),
+            )
+        }
+
+    @Test
+    fun runsNextTickAndPromiseMicrotasksBeforeCallbacksQueuedByTimeoutCallback() =
+        runTestWithEventLoop { eventLoop ->
+            context.evaluateScript(
+                """
+                globalThis.order = [];
+                setTimeout(() => {
+                    order.push("timeout");
+                    process.nextTick(() => order.push("tick-after-timeout"));
+                    Promise.resolve().then(() => order.push("promise-after-timeout"));
+                    setImmediate(() => order.push("immediate-after-timeout"));
+                    setTimeout(() => order.push("timeout-after-timeout"), 0);
+                }, 0);
+                """.trimIndent(),
+            )
+
+            eventLoop.runAndComplete()
+
+            assertEquals(
+                JsString(context, "timeout,tick-after-timeout,promise-after-timeout,immediate-after-timeout,timeout-after-timeout"),
+                context.evaluateScript("order.join(',')"),
+            )
+        }
+
+    @Test
+    fun runsCallbacksQueuedByPromiseMicrotasksAfterTickCallback() =
+        runTestWithEventLoop { eventLoop ->
+            context.evaluateScript(
+                """
+                globalThis.order = [];
+                process.nextTick(() => {
+                    order.push("tick");
+                    Promise.resolve().then(() => {
+                        order.push("promise");
+                        setImmediate(() => order.push("immediate"));
+                    });
+                });
+                """.trimIndent(),
+            )
+
+            eventLoop.runAndComplete()
+
+            assertEquals(
+                JsString(context, "tick,promise,immediate"),
+                context.evaluateScript("order.join(',')"),
+            )
         }
 
     @Test

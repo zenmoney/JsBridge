@@ -10,7 +10,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.Volatile
@@ -27,10 +26,8 @@ class JsEventLoop(
             invokeOnCompletion {
                 val dispatcher = context[CoroutineDispatcher] ?: Dispatchers.Unconfined
                 dispatcher.dispatch(context) {
-                    nextTickCallbacks.forEach { (callback, args) -> closeValues(callback, args) }
-                    nextTickCallbacks.clear()
-                    immediateCallbacks.forEachValue { (callback, args) -> closeValues(callback, args) }
-                    immediateCallbacks.clear()
+                    jsTicks.forEach { tick -> tick.close() }
+                    jsTicks.clear()
                 }
                 var exception = it
                 while (exception is CancellationException) {
@@ -45,126 +42,247 @@ class JsEventLoop(
             job +
             CoroutineExceptionHandler { _, _ -> }
 
-    private val timeoutJobs = mutableScatterMapOf<String, Job>()
-    private val intervalJobs = mutableScatterMapOf<String, Job>()
-    private val nextTickCallbacks = mutableObjectListOf<Pair<JsFunction, List<JsValue>>>()
-    private var immediateCallbacks = mutableScatterMapOf<String, Pair<JsFunction, List<JsValue>>>()
+    private val jsTicks = mutableObjectListOf<JsFunction>()
+    private val timerJobs = mutableScatterMapOf<String, Job>()
 
     fun attachTo(context: JsContext) {
         require(context.core.eventLoop == null || context.core.eventLoop == this) { "JsContext already has an event loop" }
+        if (context.core.eventLoop == this) {
+            return
+        }
         context.core.eventLoop = this
         jsScoped(context) {
-            context.globalThis["__appZenmoneyEventLoopOnEvent"] =
+            val nativeTimerEvent =
                 JsFunction {
-                    val event = it.getOrNull(0).toString()
-                    var args = it.subList(1, it.size)
-                    when (event) {
-                        "nextTick" -> {
-                            nextTick(args)
-                        }
-
-                        "clearImmediate" -> {
-                            clearImmediate(args)
-                        }
-
-                        "clearInterval" -> {
-                            clearInterval(args)
-                        }
-
-                        "clearTimeout" -> {
-                            clearTimeout(args)
-                        }
-
-                        else -> {
-                            val id =
-                                it.getOrNull(1)?.toCallbackId()
-                                    ?: throw IllegalArgumentException("unexpected event loop event")
-                            args = it.subList(2, it.size)
-                            when (event) {
-                                "setImmediate" -> setImmediate(args, id)
-                                "setInterval" -> setInterval(args, id)
-                                "setTimeout" -> setTimeout(args, id)
-                                else -> throw IllegalArgumentException("unexpected event loop event")
+                    val shouldScheduleTimer = it.getOrNull(0)?.booleanOrNull
+                    val id = it.getOrNull(1)?.intOrNull
+                    if (shouldScheduleTimer == null || id == null) {
+                        throw IllegalArgumentException("unexpected event loop event")
+                    }
+                    val contextId = this.context.core.id
+                    val jobId = "$contextId.$id"
+                    if (shouldScheduleTimer) {
+                        val delayMs = it.getOrNull(2)?.longOrNull ?: 0L
+                        val shouldRepeat = it.getOrNull(3)?.booleanOrNull ?: false
+                        timerJobs[jobId] =
+                            launch {
+                                do {
+                                    delay(delayMs)
+                                    if (shouldRepeat) {
+                                        if (jobId !in timerJobs) return@launch
+                                    } else if (timerJobs.remove(jobId) == null) {
+                                        return@launch
+                                    }
+                                    tick(contextId, id)
+                                } while (shouldRepeat)
                             }
-                        }
+                    } else {
+                        timerJobs.remove(jobId)?.cancel()
                     }
                     JsUndefined()
                 }
-            eval(
+            evalBlockScoped(
                 """
-                globalThis.__appZenmoneyEventLoopOnEvent.index = __appZenmoneyEventLoopOnEvent.index || 0;
-                globalThis.clearImmediate = function clearImmediate() {
-                     __appZenmoneyEventLoopOnEvent("clearImmediate", ...arguments);
-                };
-                globalThis.clearInterval = function clearInterval() {
-                    __appZenmoneyEventLoopOnEvent("clearInterval", ...arguments);
-                };
-                globalThis.clearTimeout = function clearTimeout () {
-                    __appZenmoneyEventLoopOnEvent("clearTimeout", ...arguments);
-                };
-                globalThis.setImmediate = function setImmediate () {
-                    const i = __appZenmoneyEventLoopOnEvent.index++;
-                    __appZenmoneyEventLoopOnEvent("setImmediate", i, ...arguments);
-                    return i;
-                };
-                globalThis.setInterval = function setInterval () {
-                    const i = __appZenmoneyEventLoopOnEvent.index++;
-                    __appZenmoneyEventLoopOnEvent("setInterval", i, ...arguments);
-                    return i;
-                };
-                globalThis.setTimeout = function setTimeout () {
-                    const i = __appZenmoneyEventLoopOnEvent.index++;
-                    __appZenmoneyEventLoopOnEvent("setTimeout", i, ...arguments);
-                    return i;
-                };
-                globalThis.process = globalThis.process || {};
-                globalThis.process.nextTick = function nextTick () {
-                    __appZenmoneyEventLoopOnEvent("nextTick", ...arguments);
-                };
+                (() => {
+                    const RUN_ALL = "all";
+                    const RUN_ONE = "one";
+                    let nextId = 0;
+                    function nextCallbackId () {
+                        return nextId++;
+                    }
+                    function validateCallback (callback) {
+                        if (typeof callback !== "function") {
+                            throw new TypeError("The \"callback\" argument must be of type function.");
+                        }
+                    }
+                    function createCallbackQueue (runMode) {
+                        let pending = [];
+                        let batch = null;
+                        function removeFrom (queue, id) {
+                            if (queue === null) return;
+                            for (let i = queue.length - 1; i >= 0; i--) {
+                                if (queue[i].id === id) {
+                                    queue.splice(i, 1);
+                                }
+                            }
+                        }
+                        function runCallback (item) {
+                            item.callback(...item.args);
+                            return true;
+                        }
+                        function runAll () {
+                            let didRun = false;
+                            while (pending.length > 0) {
+                                didRun = true;
+                                runCallback(pending.shift());
+                            }
+                            return didRun;
+                        }
+                        function runOne () {
+                            if (batch === null) {
+                                batch = pending;
+                                pending = [];
+                            }
+                            if (batch.length === 0) {
+                                batch = null;
+                                return false;
+                            }
+                            const didRun = runCallback(batch.shift());
+                            if (batch.length === 0) {
+                                batch = null;
+                            }
+                            return didRun;
+                        }
+                        return {
+                            add(callback, args, id) {
+                                validateCallback(callback);
+                                id = id === undefined ? nextCallbackId() : id;
+                                pending.push({
+                                    id: id,
+                                    callback: callback,
+                                    args: args,
+                                });
+                                return id;
+                            },
+                            remove(id) {
+                                removeFrom(pending, id);
+                                removeFrom(batch, id);
+                            },
+                            isNotEmpty() {
+                                return pending.length > 0 || (batch !== null && batch.length > 0);
+                            },
+                            run() {
+                                switch (runMode) {
+                                    case RUN_ALL:
+                                        return runAll();
+                                    case RUN_ONE:
+                                        return runOne();
+                                    default:
+                                        throw new Error("Unexpected callback queue run mode.");
+                                }
+                            },
+                        };
+                    }
+                    function createNativeTimerScheduler (timerQueue) {
+                        const scheduled = new Map();
+                        return {
+                            schedule(callback, args, delay, shouldRepeat) {
+                                validateCallback(callback);
+                                const id = nextCallbackId();
+                                shouldRepeat = Boolean(shouldRepeat);
+                                scheduled.set(id, {
+                                    id: id,
+                                    callback: callback,
+                                    args: args,
+                                    shouldRepeat: shouldRepeat,
+                                });
+                                nativeTimerEvent(true, id, Number(delay) || 0, shouldRepeat);
+                                return id;
+                            },
+                            remove(id) {
+                                if (typeof id !== "number") {
+                                    return;
+                                }
+                                scheduled.delete(id);
+                                timerQueue.remove(id);
+                                nativeTimerEvent(false, id);
+                            },
+                            activate(id) {
+                                if (typeof id !== "number") {
+                                    return;
+                                }
+                                const item = scheduled.get(id);
+                                if (item === undefined) {
+                                    return;
+                                }
+                                timerQueue.add(item.callback, item.args, item.id);
+                                if (!item.shouldRepeat) {
+                                    scheduled.delete(id);
+                                }
+                            },
+                        };
+                    }
+                    const nextTickQueue = createCallbackQueue(RUN_ALL);
+                    const timerQueue = createCallbackQueue(RUN_ONE);
+                    const immediateQueue = createCallbackQueue(RUN_ONE);
+                    const nativeTimerScheduler = createNativeTimerScheduler(timerQueue);
+                    globalThis.clearImmediate = function clearImmediate (id) {
+                        immediateQueue.remove(id);
+                    };
+                    globalThis.clearInterval = function clearInterval (id) {
+                        nativeTimerScheduler.remove(id);
+                    };
+                    globalThis.clearTimeout = function clearTimeout (id) {
+                        nativeTimerScheduler.remove(id);
+                    };
+                    globalThis.setImmediate = function setImmediate (callback, ...args) {
+                        return immediateQueue.add(callback, args);
+                    };
+                    globalThis.setInterval = function setInterval (callback, delay, ...args) {
+                        return nativeTimerScheduler.schedule(callback, args, delay, true);
+                    };
+                    globalThis.setTimeout = function setTimeout (callback, delay, ...args) {
+                        return nativeTimerScheduler.schedule(callback, args, delay);
+                    };
+                    globalThis.process = globalThis.process || {};
+                    globalThis.process.nextTick = function nextTick (callback, ...args) {
+                        nextTickQueue.add(callback, args);
+                    };
+                    function tick (timerId) {
+                        nativeTimerScheduler.activate(timerId);
+                        const didRunNextTicks = nextTickQueue.run();
+                        if (didRunNextTicks) {
+                            return true;
+                        }
+                        const didRunCallback = timerQueue.isNotEmpty()
+                            ? timerQueue.run()
+                            : immediateQueue.run();
+                        if (didRunCallback) {
+                            nextTickQueue.run();
+                            return true;
+                        }
+                        return nextTickQueue.isNotEmpty() ||
+                            timerQueue.isNotEmpty() ||
+                            immediateQueue.isNotEmpty();
+                    }
+                    return tick;
+                })()
                 """.trimIndent(),
-            )
+                "nativeTimerEvent" to nativeTimerEvent,
+            ).let {
+                jsTicks.add((it as JsFunction).escape())
+            }
         }
     }
 
-    private fun tick() {
-        while (nextTickCallbacks.isNotEmpty() || immediateCallbacks.isNotEmpty()) {
-            runNextTickCallbacks()
-            runImmediateCallbacks()
-            runNextTickCallbacks()
+    private fun tick(
+        contextId: Int? = null,
+        timerId: Int? = null,
+    ) {
+        if (!job.isActive) {
+            return
         }
-    }
-
-    private fun runNextTickCallbacks() {
-        var i = 0
-        while (i < nextTickCallbacks.size) {
-            val (callback, args) = nextTickCallbacks[i++]
-            if (!job.isActive) {
-                closeValues(callback, args)
-                continue
+        var timerId = timerId
+        var shouldContinue: Boolean
+        do {
+            shouldContinue = false
+            jsTicks.forEach { tick ->
+                if (!job.isActive || tick.isClosed) return@forEach
+                val tickShouldContinue =
+                    jsScoped(tick.context) {
+                        if (timerId != null &&
+                            contextId != null &&
+                            tick.context.core.id == contextId
+                        ) {
+                            tick(JsNumber(timerId))
+                        } else {
+                            tick()
+                        }.boolean
+                    }
+                shouldContinue = shouldContinue || tickShouldContinue
             }
-            jsScoped(callback.context) {
-                autoClose(callback)
-                autoClose(args)
-                callback(args)
-            }
-        }
-        nextTickCallbacks.clear()
-    }
-
-    private fun runImmediateCallbacks() {
-        val callbacks = immediateCallbacks
-        immediateCallbacks = mutableScatterMapOf()
-        callbacks.forEachValue { (callback, args) ->
-            if (!job.isActive) {
-                closeValues(callback, args)
-                return@forEachValue
-            }
-            jsScoped(callback.context) {
-                autoClose(callback)
-                autoClose(args)
-                callback(args)
-            }
-        }
+            timerId = null
+        } while (job.isActive && shouldContinue)
     }
 
     suspend fun runAndComplete() {
@@ -199,120 +317,4 @@ class JsEventLoop(
     fun cancel(exception: Throwable? = null) {
         cancel(exception?.message ?: "", exception)
     }
-
-    private fun JsScope.nextTick(args: List<JsValue>) {
-        ensureActive()
-        val callback = args.getOrNull(0)
-        if (callback !is JsFunction) {
-            throw IllegalArgumentException("The \"callback\" argument must be of type function.")
-        }
-        val args = args.subList(1, args.size)
-        escape(callback)
-        escape(args)
-        nextTickCallbacks.add(Pair(callback, args))
-    }
-
-    private fun JsScope.setTimeout(
-        args: List<JsValue>,
-        id: String,
-    ) {
-        ensureActive()
-        val callback = args.getOrNull(0)
-        if (callback !is JsFunction) {
-            throw IllegalArgumentException("The \"callback\" argument must be of type function.")
-        }
-        val delayMs =
-            (args.getOrNull(1) as? JsNumber)?.toNumber()?.toLong()
-                ?: throw IllegalArgumentException("The \"delay\" argument must be of type number.")
-        val args = args.subList(2, args.size)
-        escape(callback)
-        escape(args)
-        timeoutJobs[id] =
-            launch {
-                delay(delayMs)
-                jsScoped(callback.context) {
-                    autoClose(callback)
-                    autoClose(args)
-                    callback(args)
-                }
-                tick()
-            }.apply {
-                invokeOnCompletion {
-                    closeValues(callback, args)
-                }
-            }
-    }
-
-    private fun clearTimeout(args: List<JsValue>) {
-        val id = args.getOrNull(0)?.toCallbackId() ?: return
-        timeoutJobs.remove(id)?.cancel()
-    }
-
-    private fun JsScope.setInterval(
-        args: List<JsValue>,
-        id: String,
-    ) {
-        ensureActive()
-        val callback = args.getOrNull(0)
-        if (callback !is JsFunction) {
-            throw IllegalArgumentException("The \"callback\" argument must be of type function.")
-        }
-        val delayMs =
-            (args.getOrNull(1) as? JsNumber)?.toNumber()?.toLong()
-                ?: throw IllegalArgumentException("The \"delay\" argument must be of type number.")
-        val args = args.subList(2, args.size)
-        escape(callback)
-        escape(args)
-        intervalJobs[id] =
-            launch {
-                while (true) {
-                    delay(delayMs)
-                    jsScoped(callback.context) {
-                        callback(args)
-                    }
-                    tick()
-                }
-            }.apply {
-                invokeOnCompletion {
-                    closeValues(callback, args)
-                }
-            }
-    }
-
-    private fun clearInterval(args: List<JsValue>) {
-        val id = args.getOrNull(0)?.toCallbackId() ?: return
-        intervalJobs.remove(id)?.cancel()
-    }
-
-    private fun JsScope.setImmediate(
-        args: List<JsValue>,
-        id: String,
-    ) {
-        ensureActive()
-        val callback = args.getOrNull(0)
-        if (callback !is JsFunction) {
-            throw IllegalArgumentException("The \"callback\" argument must be of type function.")
-        }
-        val args = args.subList(1, args.size)
-        escape(callback)
-        escape(args)
-        immediateCallbacks[id] = Pair(callback, args)
-    }
-
-    private fun clearImmediate(args: List<JsValue>) {
-        val id = args.getOrNull(0)?.toCallbackId() ?: return
-        immediateCallbacks.remove(id)?.also { (callback, args) ->
-            closeValues(callback, args)
-        }
-    }
-
-    private fun JsValue.toCallbackId(): String? = intOrNull?.let { "${context.core.id}.$it" }
-}
-
-private fun closeValues(
-    value: JsValue,
-    other: List<JsValue>,
-) {
-    value.close()
-    other.forEach { it.close() }
 }
