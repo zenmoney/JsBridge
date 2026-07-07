@@ -29,6 +29,10 @@ suspend fun JsValue.awaitEscaped(checkType: Boolean = true): JsValue {
 abstract class JsContextTest {
     protected lateinit var context: JsContext
 
+    protected open val expectedUnhandledRejectionCallbackEvents: List<String> =
+        listOf("globalThis.onunhandledrejection:callback probe")
+    protected open val expectPromiseOverride: Boolean = true
+
     @BeforeTest
     fun onBeforeTest() {
         context = createContext()
@@ -42,6 +46,32 @@ abstract class JsContextTest {
     }
 
     abstract fun createContext(): JsContext
+
+    private fun unhandledRejectionReasonMessage(reason: JsValue?): String {
+        val message =
+            (reason as? JsObject)
+                ?.getValue("message")
+                ?.use { it.takeIf { it !is JsUndefined }?.toString() }
+        return message ?: reason?.toString() ?: "undefined"
+    }
+
+    private fun setNativePromiseRejectionHandler(
+        eventName: String,
+        onEvent: (JsValue?) -> Unit,
+    ) {
+        context.globalThis["on$eventName"] =
+            JsFunction(context) { args ->
+                val event = args.firstOrNull() as? JsObject
+                onEvent(event?.let { it["reason"] })
+                context.UNDEFINED
+            }
+    }
+
+    private fun setNativeUnhandledRejectionHandler(onUnhandledRejection: (JsValue?) -> Unit) =
+        setNativePromiseRejectionHandler("unhandledrejection", onUnhandledRejection)
+
+    private fun setNativeRejectionHandledHandler(onRejectionHandled: (JsValue?) -> Unit) =
+        setNativePromiseRejectionHandler("rejectionhandled", onRejectionHandled)
 
     fun runTestWithEventLoop(testBody: suspend TestScope.(eventLoop: JsEventLoop) -> Unit): TestResult =
         runTest {
@@ -418,6 +448,202 @@ abstract class JsContextTest {
                     e.data,
                 )
             }
+        }
+
+    @Test
+    fun configuresPromiseOverrideWhenRuntimeRequiresIt() {
+        if (!expectPromiseOverride) {
+            assertEquals(
+                JsBoolean(context, true),
+                context.evaluateScript("""typeof globalThis.$JS_NATIVE_PROMISE_GLOBAL_PROPERTY === "undefined""""),
+            )
+            return
+        }
+
+        val failures =
+            context.evaluateScript(
+                """
+                (() => {
+                    const NativePromise = globalThis.$JS_NATIVE_PROMISE_GLOBAL_PROPERTY;
+                    const promise = new Promise((resolve) => resolve(1));
+                    const resolvedPromise = Promise.resolve(1);
+                    return [
+                        ["native Promise is stored", typeof NativePromise === "function"],
+                        ["global Promise is overridden", Promise !== NativePromise],
+                        ["global Promise inherits native constructor", Object.getPrototypeOf(Promise) === NativePromise],
+                        ["global Promise keeps native prototype", Promise.prototype === NativePromise.prototype],
+                        ["constructed promise constructor points to wrapper", promise.constructor === Promise],
+                        ["constructed promise is instanceof global Promise", promise instanceof Promise],
+                        ["constructed promise is instanceof native Promise", promise instanceof NativePromise],
+                        ["resolved promise is instanceof global Promise", resolvedPromise instanceof Promise],
+                        ["resolved promise is instanceof native Promise", resolvedPromise instanceof NativePromise],
+                    ].filter((check) => !check[1]).map((check) => check[0]);
+                })()
+                """.trimIndent(),
+            ) as JsArray
+
+        assertEquals(emptyList(), failures.toPlainList())
+    }
+
+    @Test
+    fun reportsUnhandledPromiseRejectionToWebCallbacksWhenHostSupportsThem() =
+        runTestWithEventLoop { eventLoop ->
+            val callbackEvents = mutableListOf<String>()
+            setNativeUnhandledRejectionHandler { reason ->
+                callbackEvents += "globalThis.onunhandledrejection:${unhandledRejectionReasonMessage(reason)}"
+            }
+            context.evaluateScript(
+                """
+                globalThis.__unhandledRejectionCallbackEvents = [];
+                function recordUnhandledRejectionCallback(name, reason) {
+                    const message = reason && reason.message ? reason.message : String(reason);
+                    globalThis.__unhandledRejectionCallbackEvents.push(name + ":" + message);
+                }
+                function recordBrowserUnhandledRejection(name, event) {
+                    recordUnhandledRejectionCallback(
+                        name,
+                        event && "reason" in event ? event.reason : undefined
+                    );
+                }
+                if (typeof globalThis.addEventListener === "function") {
+                    globalThis.addEventListener("unhandledrejection", (event) => {
+                        recordBrowserUnhandledRejection("globalThis.addEventListener", event);
+                    });
+                }
+
+                Promise.reject(new Error("callback probe"));
+                setTimeout(() => setTimeout(() => {
+                    globalThis.__unhandledRejectionCallbackProbeDone = true;
+                }, 0), 0);
+                """.trimIndent(),
+            )
+
+            eventLoop.run()
+
+            assertEquals(
+                JsBoolean(context, true),
+                context.evaluateScript("Boolean(globalThis.__unhandledRejectionCallbackProbeDone)"),
+            )
+            val observedCallbackEvents =
+                callbackEvents +
+                    (context.evaluateScript("globalThis.__unhandledRejectionCallbackEvents") as JsArray)
+                        .toPlainList()
+                        .map { it as String }
+
+            assertEquals(
+                expectedUnhandledRejectionCallbackEvents,
+                observedCallbackEvents,
+            )
+        }
+
+    @Test
+    fun reportsUnhandledPromiseRejectionsBeforeEventLoopCompletion() =
+        runTestWithEventLoop { eventLoop ->
+            val unhandledRejections = mutableListOf<String>()
+            setNativeUnhandledRejectionHandler { reason ->
+                unhandledRejections += unhandledRejectionReasonMessage(reason)
+            }
+            context.evaluateScript(
+                """
+                Promise.reject(new Error("immediate"));
+                setTimeout(() => {
+                    Promise.reject(new Error("timer"));
+                }, 0);
+                """.trimIndent(),
+            )
+
+            eventLoop.runAndComplete()
+
+            assertEquals(
+                listOf("immediate", "timer"),
+                unhandledRejections,
+            )
+        }
+
+    @Test
+    fun doesNotReportUnhandledPromiseRejectionWhenRejectedPromiseIsAwaitedFromNativeCode() =
+        runTestWithEventLoop { eventLoop ->
+            val unhandledRejections = mutableListOf<String>()
+            setNativeUnhandledRejectionHandler { reason ->
+                unhandledRejections += unhandledRejectionReasonMessage(reason)
+            }
+            val rejectedPromise =
+                context.evaluateScript(
+                    """
+                    new Promise((resolve, reject) => {
+                        setTimeout(() => reject(new Error("awaited from native")), 0);
+                    })
+                    """.trimIndent(),
+                )
+            val awaitException: Throwable? = runCatching { rejectedPromise.awaitEscaped() }.exceptionOrNull()
+
+            eventLoop.runAndComplete()
+
+            val exception = assertIs<JsException>(awaitException)
+            assertEquals("awaited from native", exception.message)
+            assertEquals(emptyList(), unhandledRejections)
+        }
+
+    @Test
+    fun reportsRejectionHandledWhenRejectedPromiseGetsLateHandler() =
+        runTestWithEventLoop { eventLoop ->
+            val rejectionEvents = mutableListOf<String>()
+            setNativeUnhandledRejectionHandler { reason ->
+                rejectionEvents += "unhandledrejection:${unhandledRejectionReasonMessage(reason)}"
+            }
+            setNativeRejectionHandledHandler { reason ->
+                rejectionEvents += "rejectionhandled:${unhandledRejectionReasonMessage(reason)}"
+            }
+            context.evaluateScript(
+                """
+                globalThis.__lateHandledPromise = Promise.reject(new Error("late handled"));
+                """.trimIndent(),
+            )
+
+            eventLoop.run()
+
+            assertEquals(
+                listOf("unhandledrejection:late handled"),
+                rejectionEvents,
+            )
+
+            context.evaluateScript(
+                """
+                globalThis.__lateHandledPromise.catch(() => {});
+                """.trimIndent(),
+            )
+
+            eventLoop.runAndComplete()
+
+            assertEquals(
+                listOf(
+                    "unhandledrejection:late handled",
+                    "rejectionhandled:late handled",
+                ),
+                rejectionEvents,
+            )
+        }
+
+    @Test
+    fun reportsUnhandledRejectionFromNativePromiseBeforeEventLoopCompletion() =
+        runTestWithEventLoop { eventLoop ->
+            val unhandledRejections = mutableListOf<JsException>()
+            setNativeUnhandledRejectionHandler { reason ->
+                unhandledRejections += JsException(checkNotNull(reason))
+            }
+            val exception = RuntimeException("native promise failed")
+
+            JsPromise(context) { _, _ ->
+                throw exception
+            }
+
+            eventLoop.runAndComplete()
+
+            assertEquals(1, unhandledRejections.size)
+            val unhandledRejection = unhandledRejections.single()
+            assertEquals("Error", unhandledRejection.name)
+            assertEquals("native promise failed", unhandledRejection.message)
+            assertSame(exception, unhandledRejection.cause)
         }
 
     @Test

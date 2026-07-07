@@ -100,6 +100,10 @@ actual class JsEngineContext :
         JsUndefinedImpl(this, JSValue.valueWithUndefinedInContext(jsContext)!!)
             .also { registerValue(it) }
 
+    init {
+        evaluateScript(jsPromiseRejectionTrackingScript).close()
+    }
+
     private var lastException: Throwable? = null
 
     private var jsCallFunction: JSValue? =

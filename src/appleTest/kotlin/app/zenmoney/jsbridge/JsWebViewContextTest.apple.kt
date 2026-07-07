@@ -9,6 +9,13 @@ import kotlin.test.assertIs
 class JsWebViewContextTest : JsWebViewContextBaseTest() {
     override fun createContext(): JsContext = JsWebViewContext()
 
+    override val expectedUnhandledRejectionCallbackEvents: List<String> =
+        listOf(
+            "globalThis.onunhandledrejection:callback probe",
+            "globalThis.addEventListener:callback probe",
+        )
+    override val expectPromiseOverride: Boolean = false
+
     @Test
     fun executesFromBackgroundThread() {
         val request = JsWebViewBlockingRequest<Double>()

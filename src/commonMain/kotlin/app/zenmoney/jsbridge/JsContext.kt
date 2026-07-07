@@ -147,6 +147,167 @@ expect class JsEngineContext : JsContext {
 @Suppress("FunctionName")
 fun JsContext(): JsEngineContext = JsEngineContext()
 
+internal const val JS_NATIVE_PROMISE_GLOBAL_PROPERTY = "__appZenmoneyNativePromise"
+
+internal val jsPromiseRejectionTrackingScript: String =
+    """
+    (function () {
+        if (globalThis.__appZenmoneyPromiseRejectionTrackingInstalled) return;
+
+        const nativePromise = globalThis.Promise;
+        if (typeof nativePromise !== "function") return;
+
+        globalThis.__appZenmoneyPromiseRejectionTrackingInstalled = true;
+
+        try {
+            Object.defineProperty(globalThis, "$JS_NATIVE_PROMISE_GLOBAL_PROPERTY", {
+                configurable: false,
+                enumerable: false,
+                value: nativePromise,
+                writable: false,
+            });
+        } catch (_) {
+            globalThis.$JS_NATIVE_PROMISE_GLOBAL_PROPERTY = nativePromise;
+        }
+
+        const nativeThen = nativePromise.prototype.then;
+        const nativeCatch = nativePromise.prototype.catch;
+        const nativeFinally = nativePromise.prototype.finally;
+        const promiseStates = new WeakMap();
+
+        function deferToHostTurn(callback) {
+            if (typeof globalThis.setTimeout === "function") {
+                globalThis.setTimeout(callback, 0);
+            } else {
+                nativeThen.call(nativePromise.resolve(), callback);
+            }
+        }
+
+        function createPromiseRejectionEvent(type, promise, reason) {
+            if (typeof globalThis.PromiseRejectionEvent === "function") {
+                try {
+                    return new globalThis.PromiseRejectionEvent(type, {
+                        promise: promise,
+                        reason: reason,
+                        cancelable: true,
+                    });
+                } catch (_) {
+                }
+            }
+            if (typeof globalThis.Event === "function") {
+                const event = new globalThis.Event(type, { cancelable: true });
+                event.promise = promise;
+                event.reason = reason;
+                return event;
+            }
+            return {
+                type: type,
+                promise: promise,
+                reason: reason,
+                defaultPrevented: false,
+                preventDefault() {
+                    this.defaultPrevented = true;
+                },
+            };
+        }
+
+        function dispatchPromiseRejectionEvent(type, promise, reason) {
+            const event = createPromiseRejectionEvent(type, promise, reason);
+            if (typeof globalThis.dispatchEvent === "function" && typeof globalThis.Event === "function") {
+                globalThis.dispatchEvent(event);
+            } else {
+                const handler = globalThis["on" + type];
+                if (typeof handler === "function") {
+                    handler.call(globalThis, event);
+                }
+            }
+        }
+
+        function track(promise) {
+            if (
+                !promise ||
+                typeof promise !== "object" && typeof promise !== "function" ||
+                promiseStates.has(promise)
+            ) {
+                return promise;
+            }
+            const state = {
+                handled: false,
+                notified: false,
+                reason: undefined,
+            };
+            promiseStates.set(promise, state);
+            nativeThen.call(
+                promise,
+                undefined,
+                reason => {
+                    state.reason = reason;
+                    deferToHostTurn(() => {
+                        deferToHostTurn(() => {
+                            if (!state.handled) {
+                                state.notified = true;
+                                dispatchPromiseRejectionEvent("unhandledrejection", promise, reason);
+                            }
+                        });
+                    });
+                },
+            );
+            try {
+                Object.defineProperty(promise, "constructor", {
+                    configurable: true,
+                    enumerable: false,
+                    value: trackedPromise,
+                    writable: true,
+                });
+            } catch (_) {
+            }
+            return promise;
+        }
+
+        function markHandled(promise) {
+            const state = promiseStates.get(promise);
+            if (!state || state.handled) return;
+            state.handled = true;
+            if (state.notified) {
+                deferToHostTurn(() => dispatchPromiseRejectionEvent("rejectionhandled", promise, state.reason));
+            }
+        }
+
+        nativePromise.prototype.then = function then(onFulfilled, onRejected) {
+            track(this);
+            markHandled(this);
+            return track(nativeThen.call(this, onFulfilled, onRejected));
+        };
+        nativePromise.prototype.catch = function catchPromise(onRejected) {
+            track(this);
+            markHandled(this);
+            return track(nativeCatch.call(this, onRejected));
+        };
+        if (typeof nativeFinally === "function") {
+            nativePromise.prototype.finally = function finallyPromise(onFinally) {
+                track(this);
+                markHandled(this);
+                return track(nativeFinally.call(this, onFinally));
+            };
+        }
+
+        const trackedPromise = function Promise(executor) {
+            if (typeof new.target === "undefined") {
+                throw new TypeError("Promise constructor cannot be invoked without 'new'");
+            }
+            const promise = typeof Reflect === "object" && typeof Reflect.construct === "function"
+                ? Reflect.construct(nativePromise, [executor], new.target)
+                : new nativePromise(executor);
+            return track(promise);
+        };
+        trackedPromise.prototype = nativePromise.prototype;
+        if (typeof Object.setPrototypeOf === "function") {
+            Object.setPrototypeOf(trackedPromise, nativePromise);
+        }
+        globalThis.Promise = trackedPromise;
+    })();
+    """.trimIndent()
+
 class JsPlainValueState internal constructor() {
     private val values = mutableMapOf<JsValue, Any?>()
 

@@ -119,6 +119,10 @@ actual class JsEngineContext :
         JsUndefinedImpl(this, v8Runtime.createV8ValueUndefined())
             .also { registerValue(it) }
 
+    init {
+        evaluateScript(jsPromiseRejectionTrackingScript).close()
+    }
+
     private var lastException: Throwable? = null
 
     private var callbackContextIndex = 0

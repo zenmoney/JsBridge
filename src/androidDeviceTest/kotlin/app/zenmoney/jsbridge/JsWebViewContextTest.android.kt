@@ -9,6 +9,12 @@ import kotlin.test.assertEquals
 class JsWebViewContextTest : JsWebViewContextBaseTest() {
     override fun createContext(): JsContext = JsWebViewContext(ApplicationProvider.getApplicationContext<Context>())
 
+    override val expectedUnhandledRejectionCallbackEvents: List<String> =
+        listOf(
+            "globalThis.onunhandledrejection:callback probe",
+            "globalThis.addEventListener:callback probe",
+        )
+
     @Test
     fun supportsBlockingCallsFromMainThread() {
         var result: JsValue? = null

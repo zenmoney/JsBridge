@@ -79,6 +79,7 @@ private class AndroidJsWebView(
         runOnWebViewThreadBlocking {
             webView.settings.javaScriptEnabled = true
             webView.addJavascriptInterface(NativeBridge(), JS_WEB_VIEW_ANDROID_INTERFACE)
+            webView.evaluateJavascript(jsPromiseRejectionTrackingScript, null)
         }
     }
 

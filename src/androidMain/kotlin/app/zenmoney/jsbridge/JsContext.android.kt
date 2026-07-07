@@ -101,6 +101,10 @@ actual class JsEngineContext :
         JsUndefinedImpl(this, v8Runtime.executeScript("undefined"))
             .also { registerValue(it) }
 
+    init {
+        v8Runtime.executeScript(jsPromiseRejectionTrackingScript)
+    }
+
     private var lastException: Throwable? = null
 
     private val cachedValues =
