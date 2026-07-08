@@ -589,6 +589,10 @@ private fun JsWebViewContext.createWebViewValue(value: JsWebViewProtocolValue): 
             createNumber(value.decodeNumber())
         }
 
+        JsWebViewProtocolCode.VALUE_BIGINT -> {
+            createNumber(value.decodeBigInt())
+        }
+
         JsWebViewProtocolCode.VALUE_STRING -> {
             createString(value.decodeString())
         }

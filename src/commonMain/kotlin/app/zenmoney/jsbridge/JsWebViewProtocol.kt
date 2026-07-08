@@ -34,6 +34,7 @@ internal enum class JsWebViewProtocolCode(
     VALUE_UNDEFINED("u"),
     VALUE_BOOLEAN("b"),
     VALUE_NUMBER("n"),
+    VALUE_BIGINT("i"),
     VALUE_STRING("s"),
     VALUE_BYTE_ARRAY("y"),
     VALUE_HANDLE("h"),
@@ -243,6 +244,12 @@ internal value class JsWebViewProtocolValue private constructor(
             it.readProtocolNumber()
         }
 
+    fun decodeBigInt(): Double =
+        decode(JsWebViewProtocolCode.VALUE_BIGINT) {
+            it.expect(',')
+            it.readString().toDouble()
+        }
+
     fun decodeString(): String =
         decode(JsWebViewProtocolCode.VALUE_STRING) {
             it.expect(',')
@@ -303,6 +310,10 @@ internal value class JsWebViewProtocolValue private constructor(
                 }
             return JsWebViewProtocolValue("[${JsWebViewProtocolCode.VALUE_NUMBER.toJson()},$encodedNumber]")
         }
+
+        @Suppress("FunctionName")
+        fun BigInt(value: String): JsWebViewProtocolValue =
+            JsWebViewProtocolValue("[${JsWebViewProtocolCode.VALUE_BIGINT.toJson()},${value.toJson()}]")
 
         @Suppress("FunctionName")
         fun String(value: String): JsWebViewProtocolValue =
@@ -535,6 +546,11 @@ private class JsWebViewProtocolReader(
                 readProtocolNumber()
             }
 
+            JsWebViewProtocolCode.VALUE_BIGINT -> {
+                expect(',')
+                readString()
+            }
+
             JsWebViewProtocolCode.VALUE_STRING -> {
                 expect(',')
                 readString()
@@ -676,6 +692,7 @@ private fun jsWebViewProtocolValueCode(tag: Char): JsWebViewProtocolCode =
         'u' -> JsWebViewProtocolCode.VALUE_UNDEFINED
         'b' -> JsWebViewProtocolCode.VALUE_BOOLEAN
         'n' -> JsWebViewProtocolCode.VALUE_NUMBER
+        'i' -> JsWebViewProtocolCode.VALUE_BIGINT
         's' -> JsWebViewProtocolCode.VALUE_STRING
         'y' -> JsWebViewProtocolCode.VALUE_BYTE_ARRAY
         'h' -> JsWebViewProtocolCode.VALUE_HANDLE
@@ -787,6 +804,7 @@ internal val jsWebViewRuntimeScript: String =
                     if (arg[1] === 1) return true;
                     throw new Error("Unknown JsWebView boolean " + arg[1]);
                 case ${JsWebViewProtocolCode.VALUE_NUMBER.toJson()}: return decodeNumber(arg[1]);
+                case ${JsWebViewProtocolCode.VALUE_BIGINT.toJson()}: return typeof BigInt === "function" ? BigInt(arg[1]) : Number(arg[1]);
                 case ${JsWebViewProtocolCode.VALUE_STRING.toJson()}: return arg[1];
                 case ${JsWebViewProtocolCode.VALUE_HANDLE.toJson()}: return objectByHandle.get(decodeHandle(arg[1]));
                 default: throw new Error("Unknown JsWebView argument " + arg[0]);
@@ -811,6 +829,7 @@ internal val jsWebViewRuntimeScript: String =
             if (value === false) return '[${JsWebViewProtocolCode.VALUE_BOOLEAN.toJson()},0]';
             const valueType = typeof value;
             if (valueType === "number") return encodeNumber(value);
+            if (valueType === "bigint") return encodeBigInt(value);
             if (valueType === "string") return '[${JsWebViewProtocolCode.VALUE_STRING.toJson()},' + JSON.stringify(value) + ']';
             if (valueType !== "object" && valueType !== "function") {
                 return '[${JsWebViewProtocolCode.VALUE_STRING.toJson()},' + JSON.stringify(String(value)) + ']';
@@ -862,6 +881,10 @@ internal val jsWebViewRuntimeScript: String =
                 return '[${JsWebViewProtocolCode.VALUE_NUMBER.toJson()},${JsWebViewProtocolCode.NUMBER_NEGATIVE_ZERO.toJson()}]';
             }
             return '[${JsWebViewProtocolCode.VALUE_NUMBER.toJson()},' + value + ']';
+        }
+
+        function encodeBigInt(value) {
+            return '[${JsWebViewProtocolCode.VALUE_BIGINT.toJson()},' + JSON.stringify(value.toString()) + ']';
         }
 
         function encodeAsList(values) {

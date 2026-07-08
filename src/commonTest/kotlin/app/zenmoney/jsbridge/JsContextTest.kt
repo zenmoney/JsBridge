@@ -47,6 +47,11 @@ abstract class JsContextTest {
 
     abstract fun createContext(): JsContext
 
+    private fun isBigIntSupported(): Boolean =
+        assertIs<JsBoolean>(
+            context.evaluateScript("typeof BigInt === 'function'"),
+        ).toBoolean()
+
     private fun unhandledRejectionReasonMessage(reason: JsValue?): String {
         val message =
             (reason as? JsObject)
@@ -192,6 +197,33 @@ abstract class JsContextTest {
         assertEquals(JsNumber(context, 3), value)
         assertEquals(JsNumber(context, 3).hashCode(), value.hashCode())
         assertEquals(value, context.createValueAlias(value))
+    }
+
+    @Test
+    fun returnsBigIntAsNumber() {
+        if (!isBigIntSupported()) return
+
+        val value = context.evaluateScript("9007199254740993n")
+
+        assertEquals(JsNumber(context, 9007199254740992.0), value)
+    }
+
+    @Test
+    fun returnsBigIntFromArrayAsNumber() {
+        if (!isBigIntSupported()) return
+
+        val value = assertIs<JsArray>(context.evaluateScript("[9007199254740993n]")).getValue(0)
+
+        assertEquals(JsNumber(context, 9007199254740992.0), value)
+    }
+
+    @Test
+    fun reportsThrownBigIntAsJsException() {
+        if (!isBigIntSupported()) return
+
+        assertFailsWith<JsException> {
+            context.evaluateScript("throw 1n")
+        }
     }
 
     @Test

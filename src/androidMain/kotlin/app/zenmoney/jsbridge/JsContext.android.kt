@@ -114,6 +114,32 @@ actual class JsEngineContext :
             globalThis,
         )
 
+    private val jsEvaluateScript: V8Function =
+        v8Runtime.executeScript(
+            """
+            (function (script) {
+                appZenmoneyError = undefined;
+                appZenmoneyErrorOccurred = undefined;
+                try {
+                    const value = (0, eval)(script);
+                    return typeof value === "bigint" ? Number(value) : value;
+                } catch (e) {
+                    appZenmoneyError = e;
+                    appZenmoneyErrorOccurred = true;
+                }
+            })
+            """.trimIndent(),
+        ) as V8Function
+    private val jsGetValue: V8Function =
+        v8Runtime.executeScript(
+            """
+            (function (key) {
+                const value = this[key];
+                return typeof value === "bigint" ? Number(value) : value;
+            })
+            """.trimIndent(),
+        ) as V8Function
+
     private val callFunction: JsFunction =
         evaluateScript(
             """
@@ -124,7 +150,8 @@ actual class JsEngineContext :
                 try {
                     appZenmoneyError = undefined;
                     appZenmoneyErrorOccurred = undefined;
-                    return f.apply(thiz, args);
+                    const value = f.apply(thiz, args);
+                    return typeof value === "bigint" ? Number(value) : value;
                 } catch (e) {
                     appZenmoneyError = e;
                     appZenmoneyErrorOccurred = true;
@@ -181,18 +208,10 @@ actual class JsEngineContext :
     actual override fun evaluateScript(script: String): JsValue {
         val v8Value =
             try {
-                v8Runtime.executeScript(
-                    """
-                    var appZenmoneyError = undefined;
-                    var appZenmoneyErrorOccurred = undefined;
-                    try {
-                        $script
-                    } catch (e) {
-                        appZenmoneyError = e;
-                        appZenmoneyErrorOccurred = true;
-                    }
-                    """.trimIndent(),
-                )
+                withV8Array {
+                    it.push(script)
+                    jsEvaluateScript.call(null, it)
+                }
             } catch (e: Exception) {
                 throw JsException(e.message ?: e.toString(), e, emptyMap())
             }
@@ -343,7 +362,11 @@ actual class JsEngineContext :
                             _thiz = context.createValue(thiz.twin()).autoClose()
                             value(
                                 this,
-                                args?.map { context.createValue(it).autoClose() } ?: emptyList(),
+                                args?.let {
+                                    List(it.length()) { index ->
+                                        context.getObjectValue(it, index).autoClose()
+                                    }
+                                } ?: emptyList(),
                             )
                         } catch (e: Exception) {
                             context.lastException = e
@@ -494,18 +517,47 @@ actual class JsEngineContext :
         core.close()
         jsGetTime.closeQuietly()
         jsTypeOf.closeQuietly()
+        jsEvaluateScript.closeQuietly()
+        jsGetValue.closeQuietly()
         v8Runtime.close()
     }
 
     actual override fun getObjectValue(
         obj: JsArray,
         index: Int,
-    ): JsValue = createValue((obj as JsArrayImpl).v8Array.get(index))
+    ): JsValue = getObjectValue((obj as JsArrayImpl).v8Array, index)
 
     actual override fun getObjectValue(
         obj: JsObject,
         key: String,
-    ): JsValue = createValue((obj as JsObjectImpl).v8Object.get(key))
+    ): JsValue = getObjectValue((obj as JsObjectImpl).v8Object, key)
+
+    private fun getObjectValue(
+        obj: V8Object,
+        key: Int,
+    ): JsValue =
+        withV8Array {
+            it.push(key)
+            createValue(jsGetValue.call(obj, it))
+        }
+
+    private fun getObjectValue(
+        obj: V8Object,
+        key: String,
+    ): JsValue =
+        withV8Array {
+            it.push(key)
+            createValue(jsGetValue.call(obj, it))
+        }
+
+    private inline fun <T> withV8Array(block: (V8Array) -> T): T {
+        val args = V8Array(v8Runtime)
+        try {
+            return block(args)
+        } finally {
+            args.closeQuietly()
+        }
+    }
 }
 
 private fun V8Value.closeQuietly() {

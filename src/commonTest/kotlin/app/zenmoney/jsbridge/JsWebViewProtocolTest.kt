@@ -98,6 +98,14 @@ class JsWebViewProtocolTest {
     }
 
     @Test
+    fun encodesBigInts() {
+        val value = JsWebViewProtocolValue.BigInt("9007199254740993")
+
+        assertEquals("""["i","9007199254740993"]""", value.value)
+        assertEquals(9007199254740992.0, value.decodeBigInt())
+    }
+
+    @Test
     fun packsHandleTypeIntoSafeInteger() {
         val handle = JsWebViewProtocolHandle.encode(42, JsWebViewProtocolHandleType.ARRAY)
 
@@ -163,6 +171,7 @@ class JsWebViewProtocolTest {
         handler.handle("""["r",3,["s","line\n\u263a"]]""")
         handler.handle("""["r",3,["y",[0,128,255]]]""")
         handler.handle("""["r",3,["h",4294967338]]""")
+        handler.handle("""["r",3,["i","9007199254740993"]]""")
         handler.handle("""["r",3,["s","closing ] brackets"]   ]   """)
 
         assertEquals(JsWebViewProtocolCode.VALUE_STRING, messages[0].type)
@@ -174,7 +183,9 @@ class JsWebViewProtocolTest {
             JsWebViewProtocolHandle.encode(42, JsWebViewProtocolHandleType.ARRAY),
             messages[2].decodeHandle(),
         )
-        assertEquals("closing ] brackets", messages[3].decodeString())
+        assertEquals(JsWebViewProtocolCode.VALUE_BIGINT, messages[3].type)
+        assertEquals(9007199254740992.0, messages[3].decodeBigInt())
+        assertEquals("closing ] brackets", messages[4].decodeString())
     }
 
     @Test
@@ -217,7 +228,7 @@ class JsWebViewProtocolTest {
             )
 
         handler.handle(
-            """["f",5,8,["h",0],[["0"],["u"],["b",1],["n",2.5]]]""",
+            """["f",5,8,["h",0],[["0"],["u"],["b",1],["n",2.5],["i","9007199254740993"]]]""",
         )
 
         assertEquals(
@@ -230,11 +241,13 @@ class JsWebViewProtocolTest {
                 JsWebViewProtocolCode.VALUE_UNDEFINED,
                 JsWebViewProtocolCode.VALUE_BOOLEAN,
                 JsWebViewProtocolCode.VALUE_NUMBER,
+                JsWebViewProtocolCode.VALUE_BIGINT,
             ),
             receivedArgs?.map { it.type },
         )
         assertEquals(true, receivedArgs?.get(2)?.decodeBoolean())
         assertEquals(2.5, receivedArgs?.get(3)?.decodeNumber())
+        assertEquals(9007199254740992.0, receivedArgs?.get(4)?.decodeBigInt())
     }
 
     @Test
@@ -286,6 +299,9 @@ class JsWebViewProtocolTest {
         }
         assertFails {
             handler.handle("""["r",3,["n","unknown"]]""")
+        }
+        assertFails {
+            handler.handle("""["r",3,["i",42]]""")
         }
     }
 }

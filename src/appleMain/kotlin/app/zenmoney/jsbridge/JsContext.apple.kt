@@ -314,6 +314,12 @@ actual class JsEngineContext :
 
     actual override fun createNumber(value: Number): JsNumber = createValue(value) as JsNumber
 
+    private fun createBigIntNumber(value: JSValue): JsNumber =
+        JsNumberImpl(
+            this,
+            jsNumber.checkNotNull().callWithArguments(listOf(value)) as JSValue,
+        )
+
     actual override fun createNumberObject(value: Number): JsNumberObject =
         JsNumberObjectImpl(
             this,
@@ -438,6 +444,7 @@ actual class JsEngineContext :
                         when {
                             type == "boolean" -> JsBooleanObjectImpl(this, value)
                             type == "number" -> JsNumberObjectImpl(this, value)
+                            type == "bigint" -> createBigIntNumber(value)
                             type == "string" -> JsStringObjectImpl(this, value)
                             type == "function" -> JsFunctionImpl(this, value)
                             type == "Uint8Array" -> JsUint8ArrayImpl(this, value)
