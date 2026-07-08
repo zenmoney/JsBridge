@@ -77,7 +77,7 @@ fun JsScope.JsPromise(
 internal suspend fun JsValue.awaitInScope(scope: JsScope): JsValue =
     context.core.eventLoop
         .checkNotNull()
-        .async { runCatching { _awaitInScope(scope) } }
+        .async(start = CoroutineStart.UNDISPATCHED) { runCatching { _awaitInScope(scope) } }
         .await()
         .fold({ it }, { throw it })
 
