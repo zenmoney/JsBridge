@@ -59,21 +59,17 @@ class JsWebViewContext internal constructor(
                 }
 
                 override fun onFunction(
-                    nativeCallbackId: Int,
+                    jsCallbackId: Int,
                     callbackId: Int,
                     thiz: JsWebViewProtocolValue,
                     args: List<JsWebViewProtocolValue>,
                 ) {
                     dispatchWebViewNativeCallback {
-                        completeWebViewNativeCallback(
-                            nativeCallbackId,
-                            runCatching {
-                                invokeWebViewFunctionCallback(
-                                    callbackId = callbackId,
-                                    thiz = createWebViewValue(thiz),
-                                    args = args.map(::createWebViewValue),
-                                )
-                            },
+                        invokeWebViewFunctionCallback(
+                            jsCallbackId = jsCallbackId,
+                            callbackId = callbackId,
+                            thiz = thiz,
+                            args = args,
                         )
                     }
                 }
@@ -86,8 +82,8 @@ class JsWebViewContext internal constructor(
                     dispatchWebViewNativeCallback {
                         invokeWebViewPromiseExecutor(
                             callbackId = executorCallbackId,
-                            resolve = createWebViewValue(resolve) as JsFunction,
-                            reject = createWebViewValue(reject) as JsFunction,
+                            resolve = resolve,
+                            reject = reject,
                         )
                     }
                 }
@@ -346,35 +342,65 @@ class JsWebViewContext internal constructor(
     }
 
     private fun invokeWebViewFunctionCallback(
+        jsCallbackId: Int,
         callbackId: Int,
-        thiz: JsValue,
-        args: List<JsValue>,
-    ): JsValue =
-        jsFunctionScoped(this) {
-            val callback = checkNotNull(functionByCallbackId[callbackId]) { "Unknown WebView function callback $callbackId" }
-            _thiz = thiz.autoClose()
-            callback(args.map { it.autoClose() }).escape()
+        thiz: JsWebViewProtocolValue,
+        args: List<JsWebViewProtocolValue>,
+    ) {
+        try {
+            val callback = checkNotNull(functionByCallbackId[callbackId]) { "unknown WebView function callback $callbackId" }
+            jsFunctionScoped(this) {
+                _thiz = createWebViewValue(thiz).autoClose()
+                val result = callback(args.map(::createWebViewValue).autoClose())
+                sendWebViewMessage(
+                    JsWebViewMessage.CompleteNativeCallback(
+                        jsCallbackId = jsCallbackId,
+                        result = createWebViewProtocolValue(result),
+                    ),
+                )
+            }
+        } catch (e: Throwable) {
+            if (e is JsWebViewThrownError) {
+                sendWebViewMessage(
+                    JsWebViewMessage.FailNativeCallback(
+                        jsCallbackId = jsCallbackId,
+                        error = e.error,
+                    ),
+                )
+            } else {
+                createError(e).use { error ->
+                    sendWebViewMessage(
+                        JsWebViewMessage.FailNativeCallback(
+                            jsCallbackId = jsCallbackId,
+                            error = createWebViewProtocolValue(error),
+                        ),
+                    )
+                }
+            }
         }
+    }
 
     private fun invokeWebViewPromiseExecutor(
         callbackId: Int,
-        resolve: JsFunction,
-        reject: JsFunction,
+        resolve: JsWebViewProtocolValue,
+        reject: JsWebViewProtocolValue,
     ) {
         val executor = promiseExecutorByCallbackId.remove(callbackId) ?: error("Unknown WebView promise executor $callbackId")
-        JsScope(this).use { scope ->
-            scope.autoClose(resolve)
-            scope.autoClose(reject)
+        jsScoped(this) {
+            val reject = createWebViewValue(reject).autoClose() as JsFunction
             try {
                 executor(
-                    scope,
-                    resolve,
+                    createWebViewValue(resolve).autoClose() as JsFunction,
                     reject,
                 )
-            } catch (exception: Throwable) {
-                createError(exception).use { error ->
-                    reject.call(listOf(error)).close()
-                }
+            } catch (e: Throwable) {
+                val error =
+                    if (e is JsWebViewThrownError) {
+                        createWebViewValue(e.error)
+                    } else {
+                        createError(e)
+                    }.autoClose()
+                reject(error)
             }
         }
     }
@@ -387,34 +413,8 @@ class JsWebViewContext internal constructor(
                 allowWhileClosing = false,
             ).decodeByteArray()
         } catch (e: JsWebViewThrownError) {
-            throw createException(createWebViewValue(e.error))
+            throw createWebViewValue(e.error).use { createException(it) }
         }
-
-    private fun completeWebViewNativeCallback(
-        nativeCallbackId: Int,
-        result: Result<JsValue>,
-    ) {
-        result.fold(
-            onSuccess = {
-                sendWebViewMessage(
-                    JsWebViewMessage.CompleteNativeCallback(
-                        nativeCallbackId = nativeCallbackId,
-                        result = createWebViewProtocolValue(it),
-                    ),
-                )
-            },
-            onFailure = { exception ->
-                createError(exception).use { error ->
-                    sendWebViewMessage(
-                        JsWebViewMessage.FailNativeCallback(
-                            nativeCallbackId = nativeCallbackId,
-                            error = createWebViewProtocolValue(error),
-                        ),
-                    )
-                }
-            },
-        )
-    }
 
     internal fun executeWebViewMessageBlockingAndDecode(
         message: JsWebViewMessage,
@@ -424,7 +424,7 @@ class JsWebViewContext internal constructor(
         try {
             createWebViewValue(executeWebViewMessageBlocking(message, debug, allowWhileClosing))
         } catch (e: JsWebViewThrownError) {
-            throw createException(createWebViewValue(e.error))
+            throw createWebViewValue(e.error).use { createException(it) }
         }
 
     private fun executeWebViewMessageBlocking(

@@ -57,12 +57,12 @@ class JsWebViewProtocolTest {
     fun encodesNativeCallbackCommands() {
         val complete =
             JsWebViewMessage.CompleteNativeCallback(
-                nativeCallbackId = 11,
+                jsCallbackId = 11,
                 result = JsWebViewProtocolValue.Number(4),
             )
         val fail =
             JsWebViewMessage.FailNativeCallback(
-                nativeCallbackId = 12,
+                jsCallbackId = 12,
                 error = JsWebViewProtocolValue.Handle(7, JsWebViewProtocolHandleType.OBJECT),
             )
 
@@ -144,7 +144,7 @@ class JsWebViewProtocolTest {
                     ) = error("Unexpected error")
 
                     override fun onFunction(
-                        nativeCallbackId: Int,
+                        jsCallbackId: Int,
                         callbackId: Int,
                         thiz: JsWebViewProtocolValue,
                         args: List<JsWebViewProtocolValue>,
@@ -195,12 +195,12 @@ class JsWebViewProtocolTest {
                     ) = error("Unexpected error")
 
                     override fun onFunction(
-                        nativeCallbackId: Int,
+                        jsCallbackId: Int,
                         callbackId: Int,
                         thiz: JsWebViewProtocolValue,
                         args: List<JsWebViewProtocolValue>,
                     ) {
-                        assertEquals(5, nativeCallbackId)
+                        assertEquals(5, jsCallbackId)
                         assertEquals(8, callbackId)
                         receivedThis = thiz
                         receivedArgs = args
@@ -253,7 +253,7 @@ class JsWebViewProtocolTest {
                     ) = error("Unexpected error")
 
                     override fun onFunction(
-                        nativeCallbackId: Int,
+                        jsCallbackId: Int,
                         callbackId: Int,
                         thiz: JsWebViewProtocolValue,
                         args: List<JsWebViewProtocolValue>,

@@ -141,22 +141,22 @@ internal value class JsWebViewMessage private constructor(
 
         @Suppress("FunctionName")
         fun CompleteNativeCallback(
-            nativeCallbackId: Int,
+            jsCallbackId: Int,
             result: JsWebViewProtocolValue,
         ): JsWebViewMessage =
             message(
                 JsWebViewProtocolCode.COMMAND_COMPLETE_NATIVE_CALLBACK,
-                ",$nativeCallbackId,${result.value}",
+                ",$jsCallbackId,${result.value}",
             )
 
         @Suppress("FunctionName")
         fun FailNativeCallback(
-            nativeCallbackId: Int,
+            jsCallbackId: Int,
             error: JsWebViewProtocolValue,
         ): JsWebViewMessage =
             message(
                 JsWebViewProtocolCode.COMMAND_FAIL_NATIVE_CALLBACK,
-                ",$nativeCallbackId,${error.value}",
+                ",$jsCallbackId,${error.value}",
             )
     }
 }
@@ -348,7 +348,7 @@ internal class JsWebViewMessageHandler(
         )
 
         fun onFunction(
-            nativeCallbackId: Int,
+            jsCallbackId: Int,
             callbackId: Int,
             thiz: JsWebViewProtocolValue,
             args: List<JsWebViewProtocolValue>,
@@ -393,14 +393,14 @@ internal class JsWebViewMessageHandler(
     }
 
     private fun readFunctionMessage(reader: JsWebViewProtocolReader) {
-        val nativeCallbackId = reader.readInt()
+        val jsCallbackId = reader.readInt()
         reader.expect(',')
         val callbackId = reader.readInt()
         reader.expect(',')
         val thiz = reader.readProtocolValue()
         reader.expect(',')
         val args = reader.readProtocolValueList()
-        listener.onFunction(nativeCallbackId, callbackId, thiz, args)
+        listener.onFunction(jsCallbackId, callbackId, thiz, args)
     }
 
     private fun readPromiseExecutorMessage(reader: JsWebViewProtocolReader) {
@@ -691,12 +691,10 @@ internal val jsWebViewRuntimeScript: String =
     (function () {
         if (window.$JS_WEB_VIEW_BRIDGE_OBJECT) return;
 
-        const handles = new Map();
-        const objectHandles = new WeakMap();
-        const pendingNativeCallbacks = new Map();
-        const pendingNativeCallbackHandleRefCounts = new Map();
-        const releasedHandles = new Set();
-        const errorPosted = Symbol("errorPosted");
+        const objectByHandle = new Map();
+        const handleByObject = new WeakMap();
+        const refCountByHandle = new Map();
+        const pendingJsCallbacks = new Map();
         const finalizationRegistry = typeof FinalizationRegistry === "function"
             ? new FinalizationRegistry(handle => {
                 try {
@@ -705,30 +703,59 @@ internal val jsWebViewRuntimeScript: String =
                 }
             })
             : null;
-        let nextHandle = 1;
-        let nextNativeCallback = 1;
-        let nativeTimerSequence = 0;
-        const handleTypeFactor = 4294967296;
+
         const maxHandle = 2147483647;
-        const nativeSetTimeout = typeof globalThis.setTimeout === "function" ? globalThis.setTimeout.bind(globalThis) : null;
+        let nextHandle = 1;
+        let nextJsCallbackId = 1;
 
-        handles.set(0, globalThis);
-        objectHandles.set(globalThis, 0);
+        objectByHandle.set(0, globalThis);
+        handleByObject.set(globalThis, 0);
 
-        function deferToNativeTimer(callback) {
-            nativeTimerSequence++;
-            if (nativeSetTimeout) {
-                nativeSetTimeout(callback, 0);
-            } else {
-                Promise.resolve().then(callback);
+        function retain(...values) {
+            for (let i = 0; i < values.length; i++) {
+                const value = values[i];
+                const handle = handleByObject.get(value);
+                if (handle === undefined) continue;
+                retainHandle(handle, value);
             }
         }
 
-        function flushNativeTimerQueue() {
-            if (nativeSetTimeout) {
-                return new Promise(resolve => nativeSetTimeout(resolve, 0));
+        function retainHandle(handle, value, skipIfAlreadyRetained) {
+            if (handle === 0) return;
+            objectByHandle.set(handle, value);
+            const refCount = Math.max(0, refCountByHandle.get(handle) || 0);
+            if (refCount === 0 || !skipIfAlreadyRetained) {
+                refCountByHandle.set(handle, refCount + 1);
             }
-            return Promise.resolve();
+        }
+
+        function release(...values) {
+            for (let i = 0; i < values.length; i++) {
+                const value = values[i];
+                const handle = handleByObject.get(value);
+                if (handle === undefined) continue;
+                releaseHandle(handle);
+            }
+        }
+
+        function releaseHandle(handle) {
+            if (handle === 0) return;
+            const refCount = refCountByHandle.get(handle);
+            if (refCount === undefined) {
+                return true;
+            } else if (refCount <= 1) {
+                refCountByHandle.delete(handle);
+                return true;
+            } else {
+                refCountByHandle.set(handle, refCount - 1);
+                return false;
+            }
+        }
+
+        function releaseHandleAndDeleteIfUnused(handle) {
+            if (releaseHandle(handle)) {
+                objectByHandle.delete(handle);
+            }
         }
 
         function post(message) {
@@ -741,20 +768,7 @@ internal val jsWebViewRuntimeScript: String =
             }
         }
 
-        function typeOf(value) {
-            if (value instanceof Boolean) return ${JsWebViewProtocolHandleType.BOOLEAN_OBJECT.code};
-            if (value instanceof Number) return ${JsWebViewProtocolHandleType.NUMBER_OBJECT.code};
-            if (value instanceof String) return ${JsWebViewProtocolHandleType.STRING_OBJECT.code};
-            if (value instanceof Error) return ${JsWebViewProtocolHandleType.ERROR.code};
-            if (value instanceof Date) return ${JsWebViewProtocolHandleType.DATE.code};
-            if (value instanceof Uint8Array) return ${JsWebViewProtocolHandleType.UINT8_ARRAY.code};
-            if (value instanceof Promise || typeof value === "object" && value && typeof value.then === "function") {
-                return ${JsWebViewProtocolHandleType.PROMISE.code};
-            }
-            if (Array.isArray(value)) return ${JsWebViewProtocolHandleType.ARRAY.code};
-            if (typeof value === "function") return ${JsWebViewProtocolHandleType.FUNCTION.code};
-            return ${JsWebViewProtocolHandleType.OBJECT.code};
-        }
+        const handleTypeFactor = 4294967296;
 
         function encodeHandle(handle, type) {
             return type * handleTypeFactor + handle;
@@ -764,66 +778,22 @@ internal val jsWebViewRuntimeScript: String =
             return encodedHandle % handleTypeFactor;
         }
 
-        function retainNativeCallbackHandle(value, retainedHandles) {
-            if ((typeof value !== "object" || value === null) && typeof value !== "function") return;
-            const handle = objectHandles.get(value);
-            if (handle === undefined || handle === 0) return;
-            pendingNativeCallbackHandleRefCounts.set(
-                handle,
-                (pendingNativeCallbackHandleRefCounts.get(handle) || 0) + 1
-            );
-            retainedHandles.push(handle);
-        }
-
-        function releaseNativeCallbackHandles(retainedHandles) {
-            for (const handle of retainedHandles) {
-                const count = pendingNativeCallbackHandleRefCounts.get(handle);
-                if (count === undefined) continue;
-                if (count <= 1) {
-                    pendingNativeCallbackHandleRefCounts.delete(handle);
-                    if (releasedHandles.delete(handle)) {
-                        handles.delete(handle);
-                    }
-                } else {
-                    pendingNativeCallbackHandleRefCounts.set(handle, count - 1);
-                }
+        function decode(arg) {
+            switch (arg[0]) {
+                case ${JsWebViewProtocolCode.VALUE_NULL.toJson()}: return null;
+                case ${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}: return undefined;
+                case ${JsWebViewProtocolCode.VALUE_BOOLEAN.toJson()}:
+                    if (arg[1] === 0) return false;
+                    if (arg[1] === 1) return true;
+                    throw new Error("Unknown JsWebView boolean " + arg[1]);
+                case ${JsWebViewProtocolCode.VALUE_NUMBER.toJson()}: return decodeNumber(arg[1]);
+                case ${JsWebViewProtocolCode.VALUE_STRING.toJson()}: return arg[1];
+                case ${JsWebViewProtocolCode.VALUE_HANDLE.toJson()}: return objectByHandle.get(decodeHandle(arg[1]));
+                default: throw new Error("Unknown JsWebView argument " + arg[0]);
             }
         }
 
-        function releaseHandle(handle) {
-            if (pendingNativeCallbackHandleRefCounts.has(handle)) {
-                releasedHandles.add(handle);
-            } else {
-                handles.delete(handle);
-            }
-        }
-
-        function register(value) {
-            if ((typeof value === "object" && value !== null) || typeof value === "function") {
-                const existingHandle = objectHandles.get(value);
-                if (existingHandle !== undefined) {
-                    handles.set(existingHandle, value);
-                    releasedHandles.delete(existingHandle);
-                    return '[${JsWebViewProtocolCode.VALUE_HANDLE.toJson()},' +
-                        encodeHandle(existingHandle, typeOf(value)) + ']';
-                }
-            }
-            if (nextHandle > maxHandle) {
-                throw new Error("JsWebView handle limit reached");
-            }
-            const handle = nextHandle++;
-            handles.set(handle, value);
-            if ((typeof value === "object" && value !== null) || typeof value === "function") {
-                objectHandles.set(value, handle);
-                if (finalizationRegistry) {
-                    finalizationRegistry.register(value, handle);
-                }
-            }
-            return '[${JsWebViewProtocolCode.VALUE_HANDLE.toJson()},' +
-                encodeHandle(handle, typeOf(value)) + ']';
-        }
-
-        function fromNumberArgument(value) {
+        function decodeNumber(value) {
             if (typeof value === "number") return value;
             switch (value) {
                 case ${JsWebViewProtocolCode.NUMBER_NAN.toJson()}: return NaN;
@@ -834,19 +804,48 @@ internal val jsWebViewRuntimeScript: String =
             }
         }
 
-        function fromArgument(arg) {
-            switch (arg[0]) {
-                case ${JsWebViewProtocolCode.VALUE_NULL.toJson()}: return null;
-                case ${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}: return undefined;
-                case ${JsWebViewProtocolCode.VALUE_BOOLEAN.toJson()}:
-                    if (arg[1] === 0) return false;
-                    if (arg[1] === 1) return true;
-                    throw new Error("Unknown JsWebView boolean " + arg[1]);
-                case ${JsWebViewProtocolCode.VALUE_NUMBER.toJson()}: return fromNumberArgument(arg[1]);
-                case ${JsWebViewProtocolCode.VALUE_STRING.toJson()}: return arg[1];
-                case ${JsWebViewProtocolCode.VALUE_HANDLE.toJson()}: return handles.get(decodeHandle(arg[1]));
-                default: throw new Error("Unknown JsWebView argument " + arg[0]);
+        function encode(value) {
+            if (value === null) return '[${JsWebViewProtocolCode.VALUE_NULL.toJson()}]';
+            if (value === undefined) return '[${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}]';
+            if (value === true) return '[${JsWebViewProtocolCode.VALUE_BOOLEAN.toJson()},1]';
+            if (value === false) return '[${JsWebViewProtocolCode.VALUE_BOOLEAN.toJson()},0]';
+            const valueType = typeof value;
+            if (valueType === "number") return encodeNumber(value);
+            if (valueType === "string") return '[${JsWebViewProtocolCode.VALUE_STRING.toJson()},' + JSON.stringify(value) + ']';
+            if (valueType !== "object" && valueType !== "function") {
+                return '[${JsWebViewProtocolCode.VALUE_STRING.toJson()},' + JSON.stringify(String(value)) + ']';
             }
+            let handle = handleByObject.get(value);
+            if (handle === undefined) {
+                if (nextHandle >= maxHandle) {
+                    throw new Error("JsWebView handle limit reached");
+                }
+                handle = nextHandle++;
+                handleByObject.set(value, handle);
+                if (finalizationRegistry) {
+                    finalizationRegistry.register(value, handle);
+                }
+            }
+            retainHandle(handle, value, true);
+            return '[${JsWebViewProtocolCode.VALUE_HANDLE.toJson()},' + encodeHandle(handle, typeOf(value)) + ']';
+        }
+
+        function typeOf(value) {
+            try {
+                if (value instanceof Boolean) return ${JsWebViewProtocolHandleType.BOOLEAN_OBJECT.code};
+                if (value instanceof Number) return ${JsWebViewProtocolHandleType.NUMBER_OBJECT.code};
+                if (value instanceof String) return ${JsWebViewProtocolHandleType.STRING_OBJECT.code};
+                if (value instanceof Error) return ${JsWebViewProtocolHandleType.ERROR.code};
+                if (value instanceof Date) return ${JsWebViewProtocolHandleType.DATE.code};
+                if (value instanceof Uint8Array) return ${JsWebViewProtocolHandleType.UINT8_ARRAY.code};
+                if (value instanceof Promise || typeof value === "object" && value && typeof value.then === "function") {
+                    return ${JsWebViewProtocolHandleType.PROMISE.code};
+                }
+                if (Array.isArray(value)) return ${JsWebViewProtocolHandleType.ARRAY.code};
+                if (typeof value === "function") return ${JsWebViewProtocolHandleType.FUNCTION.code};
+            } catch (_) {
+            }
+            return ${JsWebViewProtocolHandleType.OBJECT.code};
         }
 
         function encodeNumber(value) {
@@ -865,208 +864,169 @@ internal val jsWebViewRuntimeScript: String =
             return '[${JsWebViewProtocolCode.VALUE_NUMBER.toJson()},' + value + ']';
         }
 
-        function toResult(value) {
-            if (value === null) return '[${JsWebViewProtocolCode.VALUE_NULL.toJson()}]';
-            if (value === undefined) return '[${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}]';
-            if (value === true) return '[${JsWebViewProtocolCode.VALUE_BOOLEAN.toJson()},1]';
-            if (value === false) return '[${JsWebViewProtocolCode.VALUE_BOOLEAN.toJson()},0]';
-            if (typeof value === "number") return encodeNumber(value);
-            if (typeof value === "string") return '[${JsWebViewProtocolCode.VALUE_STRING.toJson()},' + JSON.stringify(value) + ']';
-            return register(value);
-        }
-
-        function toResultList(values, retainedHandles) {
+        function encodeAsList(values) {
             let result = "[";
             for (let i = 0; i < values.length; i++) {
-                if (i !== 0) result += ",";
-                const value = values[i];
-                result += toResult(value);
-                if (retainedHandles) {
-                    retainNativeCallbackHandle(value, retainedHandles);
+                if (i !== 0) {
+                    result += ",";
                 }
+                result += encode(values[i]);
             }
-            return result + "]";
+            result += "]";
+            return result;
         }
 
-        function toErrorResult(error) {
-            try {
-                return toResult(error instanceof Error ? error : new Error(error && error.message ? error.message : String(error)));
-            } catch (e) {
-                return '[${JsWebViewProtocolCode.VALUE_STRING.toJson()},' +
-                    JSON.stringify(error && error.message ? error.message : String(error)) + ']';
-            }
-        }
-
-        function runCommand(command, requestId) {
-            try {
-                switch (command[0]) {
-                    case ${JsWebViewProtocolCode.COMMAND_EVALUATE.toJson()}: {
-                        const errorKey = "__appZenmoneyEvalError" + requestId;
-                        globalThis[errorKey] = null;
-                        const value = (0, eval)(
-                            "try {\n" +
-                            command[1] +
-                            "\n} catch (__appZenmoneyEvalError) { globalThis[" + JSON.stringify(errorKey) + "] = { error: __appZenmoneyEvalError }; }"
-                        );
-                        const errorBox = globalThis[errorKey];
-                        delete globalThis[errorKey];
-                        if (errorBox) {
-                            throw errorBox.error;
-                        }
-                        return toResult(value);
+        function runCommand (command, requestId) {
+            switch (command[0]) {
+                case ${JsWebViewProtocolCode.COMMAND_EVALUATE.toJson()}: {
+                    const errorKey = "__appZenmoneyEvalError" + requestId;
+                    globalThis[errorKey] = null;
+                    const value = (0, eval)(
+                        "try {\n" +
+                        command[1] +
+                        "\n} catch (__appZenmoneyEvalError) { globalThis[" + JSON.stringify(errorKey) + "] = { error: __appZenmoneyEvalError }; }"
+                    );
+                    const errorBox = globalThis[errorKey];
+                    delete globalThis[errorKey];
+                    if (errorBox) {
+                        throw errorBox.error;
                     }
-                    case ${JsWebViewProtocolCode.COMMAND_CREATE_ARRAY.toJson()}:
-                        return register(command[1].map(fromArgument));
-                    case ${JsWebViewProtocolCode.COMMAND_CREATE_UINT8ARRAY.toJson()}:
-                        return register(Uint8Array.from(command[1]));
-                    case ${JsWebViewProtocolCode.COMMAND_READ_UINT8ARRAY.toJson()}:
-                        return '[${JsWebViewProtocolCode.VALUE_BYTE_ARRAY.toJson()},[' +
-                            handles.get(command[1]).join(",") + ']]';
-                    case ${JsWebViewProtocolCode.COMMAND_CREATE_FUNCTION.toJson()}: {
-                        const callbackId = command[1];
-                        const f = function (...args) {
-                            const nativeCallbackId = nextNativeCallback++;
-                            const retainedHandles = [];
-                            const promise = new Promise((resolve, reject) => {
-                                pendingNativeCallbacks.set(nativeCallbackId, { resolve, reject, retainedHandles });
-                            });
-                            try {
-                                const thiz = toResult(this);
-                                retainNativeCallbackHandle(this, retainedHandles);
-                                const callbackArgs = toResultList(args, retainedHandles);
-                                deferToNativeTimer(() => {
+                    return encode(value);
+                }
+
+                case ${JsWebViewProtocolCode.COMMAND_CREATE_ARRAY.toJson()}:
+                    return encode(command[1].map(decode));
+
+                case ${JsWebViewProtocolCode.COMMAND_CREATE_UINT8ARRAY.toJson()}:
+                    return encode(Uint8Array.from(command[1]));
+
+                case ${JsWebViewProtocolCode.COMMAND_READ_UINT8ARRAY.toJson()}:
+                    return '[${JsWebViewProtocolCode.VALUE_BYTE_ARRAY.toJson()},[' + objectByHandle.get(command[1]).join(",") + ']]';
+
+                case ${JsWebViewProtocolCode.COMMAND_CREATE_FUNCTION.toJson()}: {
+                    const callbackId = command[1];
+                    return encode(function (...args) {
+                        const thiz = this;
+                        return new Promise((resolve, reject) => {
+                            const jsCallbackId = nextJsCallbackId++;
+
+                            pendingJsCallbacks.set(jsCallbackId, {
+                                resolve: function () {
                                     try {
-                                        post(
-                                            '[${JsWebViewProtocolCode.CALLBACK_FUNCTION.toJson()},' +
-                                            nativeCallbackId + ',' + callbackId + ',' +
-                                            thiz + ',' + callbackArgs + ']'
-                                        );
-                                    } catch (error) {
-                                        const callback = pendingNativeCallbacks.get(nativeCallbackId);
-                                        if (callback) {
-                                            pendingNativeCallbacks.delete(nativeCallbackId);
-                                            releaseNativeCallbackHandles(callback.retainedHandles);
-                                            callback.reject(error);
-                                        }
+                                        resolve.apply(this, arguments);
+                                    } finally {
+                                        release(thiz);
+                                        release(...args);
                                     }
-                                }, 0);
-                            } catch (error) {
-                                pendingNativeCallbacks.delete(nativeCallbackId);
-                                releaseNativeCallbackHandles(retainedHandles);
-                                promise.catch(() => {});
-                                return Promise.reject(error);
-                            }
-                            return promise;
-                        };
-                        return register(f);
-                    }
-                    case ${JsWebViewProtocolCode.COMMAND_CREATE_PROMISE.toJson()}: {
-                        const executorCallbackId = command[1];
-                        return register(new Promise((resolve, reject) => {
-                            const resolveHandle = register(resolve);
-                            const rejectHandle = register(reject);
-                            deferToNativeTimer(() => {
-                                try {
-                                    post(
-                                        '[${JsWebViewProtocolCode.CALLBACK_PROMISE_EXECUTOR.toJson()},' +
-                                        executorCallbackId + ',' +
-                                        resolveHandle + ',' + rejectHandle + ']'
-                                    );
-                                } catch (error) {
-                                    reject(error);
+                                },
+                                reject: function () {
+                                    try {
+                                        reject.apply(this, arguments);
+                                    } finally {
+                                        release(thiz);
+                                        release(...args);
+                                    }
                                 }
-                            }, 0);
-                        }));
-                    }
-                    case ${JsWebViewProtocolCode.COMMAND_GET_OBJECT_VALUE.toJson()}: {
-                        const receiver = handles.get(command[1]);
-                        return toResult(receiver[command[2]]);
-                    }
-                    case ${JsWebViewProtocolCode.COMMAND_SET_OBJECT_VALUE.toJson()}: {
-                        const receiver = handles.get(command[1]);
-                        receiver[command[2]] = fromArgument(command[3]);
-                        return '[${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}]';
-                    }
-                    case ${JsWebViewProtocolCode.COMMAND_CALL_FUNCTION.toJson()}: {
-                        const f = handles.get(command[1]);
-                        const thiz = command[2] == null ? globalThis : handles.get(command[2]);
-                        const value = f.apply(thiz, command[3].map(fromArgument));
-                        return toResult(value);
-                    }
-                    case ${JsWebViewProtocolCode.COMMAND_CONSTRUCT.toJson()}: {
-                        const f = handles.get(command[1]);
-                        const value = new f(...command[2].map(fromArgument));
-                        return toResult(value);
-                    }
-                    case ${JsWebViewProtocolCode.COMMAND_RELEASE.toJson()}:
-                        releaseHandle(command[1]);
-                        return '[${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}]';
-                    default:
-                        throw new Error("Unknown JsWebView command " + command[0]);
-                }
-            } catch (error) {
-                post('[${JsWebViewProtocolCode.CALLBACK_ERROR.toJson()},' +
-                    requestId + ',' + toErrorResult(error) + ']');
-                return errorPosted;
-            }
-        }
+                            });
 
-        function postCommandResult(requestId, result, nativeTimerSequenceBefore) {
-            // Run promise reactions that may schedule native callbacks without unwrapping the command result.
-            Promise.resolve().then(() => {
-                try {
-                    if (nativeTimerSequence !== nativeTimerSequenceBefore) {
-                        flushNativeTimerQueue().then(
-                            () => post('[${JsWebViewProtocolCode.CALLBACK_RESULT.toJson()},' +
-                                requestId + ',' + result + ']'),
-                            error => post('[${JsWebViewProtocolCode.CALLBACK_ERROR.toJson()},' +
-                                requestId + ',' + toErrorResult(error) + ']')
-                        );
-                    } else {
-                        post('[${JsWebViewProtocolCode.CALLBACK_RESULT.toJson()},' +
-                            requestId + ',' + result + ']');
-                    }
-                } catch (error) {
-                    post('[${JsWebViewProtocolCode.CALLBACK_ERROR.toJson()},' +
-                        requestId + ',' + toErrorResult(error) + ']');
+                            const encodedThis = encode(thiz);
+                            const encodedArgs = encodeAsList(args);
+                            retain(thiz);
+                            retain(...args);
+
+                            try {
+                                post(
+                                    '[${JsWebViewProtocolCode.CALLBACK_FUNCTION.toJson()},' +
+                                    jsCallbackId + ',' + callbackId + ',' + encodedThis + ',' + encodedArgs + ']'
+                                );
+                            } catch (error) {
+                                const callback = pendingJsCallbacks.get(jsCallbackId);
+                                if (callback) {
+                                    pendingJsCallbacks.delete(jsCallbackId);
+                                    callback.reject(error);
+                                }
+                            }
+                        });
+                    });
                 }
-            });
+
+                case ${JsWebViewProtocolCode.COMMAND_CREATE_PROMISE.toJson()}: {
+                    const executorCallbackId = command[1];
+                    return encode(new Promise((resolve, reject) => {
+                        try {
+                            post(
+                                '[${JsWebViewProtocolCode.CALLBACK_PROMISE_EXECUTOR.toJson()},' +
+                                executorCallbackId + ',' + encode(resolve) + ',' + encode(reject) + ']'
+                            );
+                        } catch (error) {
+                            reject(error);
+                        }
+                    }));
+                }
+
+                case ${JsWebViewProtocolCode.COMMAND_GET_OBJECT_VALUE.toJson()}: {
+                    const receiver = objectByHandle.get(command[1]);
+                    return encode(receiver[command[2]]);
+                }
+
+                case ${JsWebViewProtocolCode.COMMAND_SET_OBJECT_VALUE.toJson()}: {
+                    const receiver = objectByHandle.get(command[1]);
+                    receiver[command[2]] = decode(command[3]);
+                    return '[${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}]';
+                }
+
+                case ${JsWebViewProtocolCode.COMMAND_CALL_FUNCTION.toJson()}: {
+                    const f = objectByHandle.get(command[1]);
+                    const thiz = command[2] == null ? globalThis : objectByHandle.get(command[2]);
+                    const value = f.apply(thiz, command[3].map(decode));
+                    return encode(value);
+                }
+
+                case ${JsWebViewProtocolCode.COMMAND_CONSTRUCT.toJson()}: {
+                    const f = objectByHandle.get(command[1]);
+                    const value = new f(...command[2].map(decode));
+                    return encode(value);
+                }
+
+                case ${JsWebViewProtocolCode.COMMAND_RELEASE.toJson()}:
+                    releaseHandleAndDeleteIfUnused(command[1]);
+                    return '[${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}]';
+
+                default:
+                    throw new Error("unexpected JsWebView message " + command[0]);
+            }
         }
 
         window.$JS_WEB_VIEW_BRIDGE_OBJECT = {
-            dispatch(message, requestId) {
+            dispatch (message, requestId) {
                 if (requestId !== undefined) {
                     try {
-                        const nativeTimerSequenceBefore = nativeTimerSequence;
-                        const result = runCommand(message, requestId);
-                        if (result !== errorPosted) {
-                            postCommandResult(requestId, result, nativeTimerSequenceBefore);
-                        }
+                        post('[${JsWebViewProtocolCode.CALLBACK_RESULT.toJson()},' + requestId + ',' + runCommand(message, requestId) + ']');
                     } catch (error) {
-                        post('[${JsWebViewProtocolCode.CALLBACK_ERROR.toJson()},' +
-                            requestId + ',' + toErrorResult(error) + ']');
+                        post('[${JsWebViewProtocolCode.CALLBACK_ERROR.toJson()},' + requestId + ',' + encode(error) + ']');
                     }
                     return;
                 }
 
-                const callback = pendingNativeCallbacks.get(message[1]);
-                if (!callback) return;
-                pendingNativeCallbacks.delete(message[1]);
+                const jsCallbackId = message[1];
+                const callback = pendingJsCallbacks.get(jsCallbackId);
+                if (!callback) {
+                    return;
+                }
+                pendingJsCallbacks.delete(jsCallbackId);
                 try {
                     switch (message[0]) {
                         case ${JsWebViewProtocolCode.COMMAND_COMPLETE_NATIVE_CALLBACK.toJson()}:
-                            callback.resolve(fromArgument(message[2]));
+                            callback.resolve(decode(message[2]));
                             break;
                         case ${JsWebViewProtocolCode.COMMAND_FAIL_NATIVE_CALLBACK.toJson()}:
-                            callback.reject(fromArgument(message[2]));
+                            callback.reject(decode(message[2]));
                             break;
                         default:
-                            callback.reject(new Error("Unknown JsWebView one-way message " + message[0]));
+                            callback.reject(new Error("unexpected JsWebView message " + message[0]));
                     }
                 } catch (e) {
                     callback.reject(e);
-                } finally {
-                    releaseNativeCallbackHandles(callback.retainedHandles);
                 }
             },
         };
