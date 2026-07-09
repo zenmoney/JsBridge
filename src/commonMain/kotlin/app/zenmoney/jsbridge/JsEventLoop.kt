@@ -1,7 +1,9 @@
 package app.zenmoney.jsbridge
 
+import androidx.collection.mutableIntObjectMapOf
 import androidx.collection.mutableObjectListOf
 import androidx.collection.mutableScatterMapOf
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -11,9 +13,65 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.resume
+
+private const val MICROTASK_CHECKPOINT_ITERATIONS = 100
+
+private class JsMicrotaskCheckpoint(
+    private val runCheckpoint: JsFunction,
+) : AutoCloseable {
+    private var id = 0
+    private var continuationById = mutableIntObjectMapOf<CancellableContinuation<Unit>>()
+
+    suspend fun await() {
+        if (runCheckpoint.isClosed) return
+        val id = id++
+        try {
+            suspendCancellableCoroutine { cont ->
+                continuationById[id] = cont
+                try {
+                    jsScoped(runCheckpoint.context) {
+                        runCheckpoint(JsNumber(id))
+                    }
+                } catch (_: Exception) {
+                    complete(id)
+                }
+            }
+        } finally {
+            continuationById.remove(id)
+        }
+    }
+
+    fun complete(args: List<JsValue>) {
+        val id = args.getOrNull(0)?.intOrNull ?: return
+        complete(id)
+    }
+
+    private fun complete(id: Int) {
+        val cont = continuationById.remove(id) ?: return
+        cont.resume(Unit)
+    }
+
+    override fun close() {
+        runCheckpoint.close()
+        var continuations: ArrayList<CancellableContinuation<Unit>>? = null
+        continuationById.forEachValue {
+            if (continuations == null) {
+                continuations = ArrayList(continuationById.size)
+            }
+            continuations.add(it)
+        }
+        continuationById.clear()
+        continuations?.forEach { it.cancel() }
+    }
+}
 
 class JsEventLoop(
     context: CoroutineContext,
@@ -28,6 +86,8 @@ class JsEventLoop(
                 dispatcher.dispatch(context) {
                     jsTicks.forEach { tick -> tick.close() }
                     jsTicks.clear()
+                    microtaskCheckpoints.forEach { checkpoint -> checkpoint.close() }
+                    microtaskCheckpoints.clear()
                 }
                 var exception = it
                 while (exception is CancellationException) {
@@ -43,7 +103,9 @@ class JsEventLoop(
             CoroutineExceptionHandler { _, _ -> }
 
     private val jsTicks = mutableObjectListOf<JsFunction>()
+    private val microtaskCheckpoints = mutableObjectListOf<JsMicrotaskCheckpoint>()
     private val timerJobs = mutableScatterMapOf<String, Job>()
+    private val lock = Mutex()
 
     fun attachTo(context: JsContext) {
         require(context.core.eventLoop == null || context.core.eventLoop == this) { "JsContext already has an event loop" }
@@ -52,6 +114,12 @@ class JsEventLoop(
         }
         context.core.eventLoop = this
         jsScoped(context) {
+            lateinit var microtaskCheckpoint: JsMicrotaskCheckpoint
+            val microtaskCallback =
+                JsFunction {
+                    microtaskCheckpoint.complete(it)
+                    JsUndefined()
+                }
             val nativeTimerEvent =
                 JsFunction {
                     val shouldScheduleTimer = it.getOrNull(0)?.booleanOrNull
@@ -245,12 +313,28 @@ class JsEventLoop(
                             timerQueue.isNotEmpty() ||
                             immediateQueue.isNotEmpty();
                     }
-                    return tick;
+                    async function runMicrotaskCheckpoint () {
+                        for (let i = 0; i < $MICROTASK_CHECKPOINT_ITERATIONS; i++) {
+                            await undefined;
+                        }
+                        microtaskCallback.apply(this, arguments);
+                    }
+                    return {
+                        tick: tick,
+                        runMicrotaskCheckpoint: runMicrotaskCheckpoint,
+                    };
                 })()
                 """.trimIndent(),
                 "nativeTimerEvent" to nativeTimerEvent,
+                "microtaskCallback" to microtaskCallback,
             ).let {
-                jsTicks.add((it as JsFunction).escape())
+                it as JsObject
+                jsTicks.add((it["tick"] as JsFunction).escape())
+                microtaskCheckpoint =
+                    JsMicrotaskCheckpoint(
+                        runCheckpoint = (it["runMicrotaskCheckpoint"] as JsFunction).escape(),
+                    )
+                microtaskCheckpoints.add(microtaskCheckpoint)
             }
         }
     }
@@ -258,12 +342,13 @@ class JsEventLoop(
     private fun tick(
         contextId: Int? = null,
         timerId: Int? = null,
-    ) {
+    ): Boolean {
         if (!job.isActive) {
-            return
+            return false
         }
         var timerId = timerId
         var shouldContinue: Boolean
+        var didRun = false
         do {
             shouldContinue = false
             jsTicks.forEach { tick ->
@@ -279,22 +364,36 @@ class JsEventLoop(
                             tick()
                         }.boolean
                     }
+                didRun = didRun || tickShouldContinue
                 shouldContinue = shouldContinue || tickShouldContinue
             }
             timerId = null
         } while (job.isActive && shouldContinue)
+        return didRun
     }
 
     suspend fun runAndComplete() {
         if (!job.isActive) {
             return
         }
-        run()
-        job.complete()
-        job.join()
+        lock.withLock {
+            _run()
+            job.complete()
+            job.join()
+        }
     }
 
     suspend fun run() {
+        if (!job.isActive) {
+            return
+        }
+        lock.withLock {
+            _run()
+        }
+    }
+
+    @Suppress("FunctionName")
+    private suspend fun _run() {
         if (!job.isActive) {
             return
         }
@@ -310,7 +409,21 @@ class JsEventLoop(
                     tick()
                 }
             }
-            if (!hasChildren) break
+            if (hasChildren) continue
+            val didRunAfterMicrotasks =
+                withContext(coroutineContext) {
+                    withTimeoutOrNull(10000) {
+                        microtaskCheckpoints.forEach {
+                            if (!job.isActive) {
+                                return@withTimeoutOrNull
+                            }
+                            it.await()
+                        }
+                    }
+                    tick()
+                }
+            if (didRunAfterMicrotasks) continue
+            break
         }
     }
 
