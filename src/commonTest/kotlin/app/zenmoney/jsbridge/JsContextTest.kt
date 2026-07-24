@@ -1,10 +1,17 @@
 package app.zenmoney.jsbridge
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -1263,13 +1270,162 @@ abstract class JsContextTest {
                 e = exception
             }
             eventLoop.cancel()
+            eventLoop.run()
             assertEquals(true, isCancelled)
             assertNull(e)
         }
 
     @Test
+    fun requiresDispatcher() {
+        assertFailsWith<IllegalArgumentException> {
+            JsEventLoop(EmptyCoroutineContext)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            JsEventLoop(Dispatchers.Unconfined)
+        }
+    }
+
+    @Test
+    fun runCompletesNormallyWhenEventLoopIsCancelledWithoutCause() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext)
+            eventLoop.cancel()
+
+            eventLoop.run()
+        }
+
+    @Test
+    fun runThrowsEventLoopCancellationCause() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext)
+            val exception = RuntimeException("cancelled because of an error")
+            var completionException: Throwable? = null
+            eventLoop.onCompletion = { _, cause ->
+                completionException = cause
+            }
+
+            eventLoop.cancel(exception)
+
+            assertSame(exception, assertFailsWith<RuntimeException> { eventLoop.run() })
+            assertSame(exception, completionException)
+        }
+
+    @Test
+    fun runThrowsExplicitCancellationException() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext)
+            val exception = CancellationException("explicit cancellation cause")
+            var completionException: Throwable? = null
+            eventLoop.onCompletion = { _, cause ->
+                completionException = cause
+            }
+
+            eventLoop.cancel(exception)
+
+            assertSame(exception, assertFailsWith<CancellationException> { eventLoop.run() })
+            assertSame(exception, completionException)
+        }
+
+    @Test
+    fun runningRunThrowsEventLoopCancellationCause() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext)
+            eventLoop.launch {
+                awaitCancellation()
+            }
+            val result =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    runCatching {
+                        eventLoop.run()
+                    }
+                }
+            val exception = RuntimeException("cancelled while running")
+
+            eventLoop.cancel(exception)
+
+            assertSame(exception, result.await().exceptionOrNull())
+        }
+
+    @Test
+    fun concurrentRunCallsThrowTheSameEventLoopCancellationCause() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext)
+            eventLoop.launch {
+                awaitCancellation()
+            }
+            val firstResult =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    runCatching {
+                        eventLoop.run()
+                    }
+                }
+            val secondResult =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    runCatching {
+                        eventLoop.runAndComplete()
+                    }
+                }
+            val exception = RuntimeException("cancelled while concurrently running")
+
+            eventLoop.cancel(exception)
+
+            assertSame(exception, firstResult.await().exceptionOrNull())
+            assertSame(exception, secondResult.await().exceptionOrNull())
+        }
+
+    @Test
+    fun serializesConcurrentRunAndCompleteCalls() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext)
+            val childCanComplete = CompletableDeferred<Unit>()
+            eventLoop.launch {
+                childCanComplete.await()
+            }
+            val runCall =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    eventLoop.run()
+                }
+            val runAndCompleteCall =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    eventLoop.runAndComplete()
+                }
+
+            childCanComplete.complete(Unit)
+
+            runCall.await()
+            runAndCompleteCall.await()
+        }
+
+    @Test
+    fun rejectsRunFromEventLoopCoroutine() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext)
+            val result =
+                eventLoop.async {
+                    runCatching {
+                        eventLoop.run()
+                    }
+                }
+
+            assertIs<IllegalStateException>(result.await().exceptionOrNull())
+            eventLoop.cancel()
+            eventLoop.run()
+        }
+
+    @Test
+    fun runAndCompleteThrowsEventLoopCancellationCause() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext)
+            val exception = RuntimeException("cancelled because of an error")
+            eventLoop.cancel(exception)
+
+            assertSame(exception, assertFailsWith<RuntimeException> { eventLoop.runAndComplete() })
+        }
+
+    @Test
     fun callsOnCompletionListenerWhenEventLoopIsCancelledBecauseOfException() =
-        runTestWithEventLoop { eventLoop ->
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext)
             var isCancelled: Boolean? = null
             var e: Throwable? = null
             eventLoop.onCompletion = { cancelled, exception ->
@@ -1288,10 +1444,94 @@ abstract class JsContextTest {
                     throw exception
                 }
             job.join()
+            assertSame(exception, assertFailsWith<RuntimeException> { eventLoop.run() })
             assertEquals(true, isCancelled)
             assertEquals(exception, e)
             assertTrue(job.isCancelled)
             assertTrue(siblingJob.isCancelled)
+        }
+
+    @Test
+    fun completedEventLoopRemainsAttached() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+
+            eventLoop.runAndComplete()
+
+            assertSame(eventLoop, context.eventLoop)
+
+            val nextEventLoop =
+                JsEventLoop(coroutineContext)
+            assertFailsWith<IllegalArgumentException> {
+                nextEventLoop.attachTo(context)
+            }
+            nextEventLoop.cancel()
+            nextEventLoop.run()
+        }
+
+    @Test
+    fun attachesContextWhileEventLoopIsClosing() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext)
+            eventLoop.launch {
+                awaitCancellation()
+            }
+            val runCall =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    eventLoop.run()
+                }
+
+            eventLoop.cancel()
+            eventLoop.attachTo(context)
+            runCall.await()
+
+            assertSame(eventLoop, context.eventLoop)
+        }
+
+    @Test
+    fun attachesContextWhileEventLoopIsRunning() =
+        runTest {
+            val attachedContext = createContext()
+            try {
+                val eventLoop =
+                    JsEventLoop(coroutineContext).apply {
+                        attachTo(context)
+                    }
+                val childStarted = CompletableDeferred<Unit>()
+                val childCanComplete = CompletableDeferred<Unit>()
+                eventLoop.launch {
+                    childStarted.complete(Unit)
+                    childCanComplete.await()
+                }
+                val runCall =
+                    async(start = CoroutineStart.UNDISPATCHED) {
+                        eventLoop.run()
+                    }
+                childStarted.await()
+
+                eventLoop.attachTo(attachedContext)
+
+                assertSame(eventLoop, attachedContext.eventLoop)
+                childCanComplete.complete(Unit)
+                runCall.await()
+                eventLoop.runAndComplete()
+            } finally {
+                attachedContext.close()
+            }
+        }
+
+    @Test
+    fun attachesContextToClosedEventLoop() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext)
+            eventLoop.runAndComplete()
+
+            eventLoop.attachTo(context)
+
+            assertSame(eventLoop, context.eventLoop)
         }
 
     @Test

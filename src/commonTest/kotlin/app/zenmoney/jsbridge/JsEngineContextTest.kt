@@ -1,13 +1,74 @@
 package app.zenmoney.jsbridge
 
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class JsEngineContextTest : JsContextTest() {
     override fun createContext(): JsContext = JsContext()
+
+    @Test
+    fun runsZeroDelayTimeoutWithEagerDispatcher() =
+        runTest(UnconfinedTestDispatcher()) {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+            context.evaluateScript(
+                """
+                globalThis.zeroDelayTimeoutCalled = false;
+                setTimeout(() => {
+                    globalThis.zeroDelayTimeoutCalled = true;
+                }, 0);
+                """.trimIndent(),
+            )
+
+            eventLoop.runAndComplete()
+
+            assertEquals(JsBoolean(context, true), context.evaluateScript("zeroDelayTimeoutCalled"))
+        }
+
+    @Test
+    fun completedAttachedEventLoopRejectsNativeTimers() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+            eventLoop.runAndComplete()
+
+            assertClosedEventLoopRejectsNativeTimers()
+        }
+
+    @Test
+    fun attachingCompletedEventLoopRejectsNativeTimers() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext)
+            eventLoop.runAndComplete()
+
+            eventLoop.attachTo(context)
+
+            assertClosedEventLoopRejectsNativeTimers()
+        }
+
+    private fun assertClosedEventLoopRejectsNativeTimers() {
+        listOf(
+            "setTimeout(() => {}, 0)",
+            "setInterval(() => {}, 0)",
+        ).forEach { script ->
+            val exception =
+                assertFailsWith<JsException> {
+                    context.evaluateScript(script)
+                }
+            assertEquals("JsEventLoop is closed", exception.message)
+            assertIs<IllegalStateException>(exception.cause)
+        }
+    }
 
     @Test
     fun callsNativeFunctionWithoutArguments() {

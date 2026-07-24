@@ -1,5 +1,10 @@
 package app.zenmoney.jsbridge
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -7,6 +12,33 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 abstract class JsWebViewContextBaseTest : JsContextTest() {
+    @Test
+    fun runWaitsForChildLaunchedDuringMicrotaskCheckpoint() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+            val runCall =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    eventLoop.run()
+                }
+            assertFalse(runCall.isCompleted)
+            val childCanComplete = CompletableDeferred<Unit>()
+            val child =
+                eventLoop.launch {
+                    childCanComplete.await()
+                }
+
+            testScheduler.runCurrent()
+
+            assertFalse(runCall.isCompleted)
+            childCanComplete.complete(Unit)
+            child.join()
+            runCall.await()
+            eventLoop.runAndComplete()
+        }
+
     @Test
     fun closesWebViewHandleAliasesIndependently() {
         jsScoped(context) {

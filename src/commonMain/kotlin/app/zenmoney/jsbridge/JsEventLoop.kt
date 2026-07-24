@@ -5,24 +5,48 @@ import androidx.collection.mutableObjectListOf
 import androidx.collection.mutableScatterMapOf
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import kotlin.concurrent.Volatile
+import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 
 private const val MICROTASK_CHECKPOINT_ITERATIONS = 100
+
+// Job.cancel(cause) adds one framework wrapper. Any nested CancellationException is the explicitly supplied cause.
+private fun Throwable?.unwrapCancellationException(): Throwable? =
+    when (this) {
+        is CancellationException -> cause
+        else -> this
+    }
+
+private fun Job?.isDescendantOf(parent: Job): Boolean {
+    var job = this
+    while (job != null) {
+        if (job === parent) {
+            return true
+        }
+        job = job.parent
+    }
+    return false
+}
 
 private class JsMicrotaskCheckpoint(
     private val runCheckpoint: JsFunction,
@@ -73,27 +97,49 @@ private class JsMicrotaskCheckpoint(
     }
 }
 
+/**
+ * Runs JavaScript callbacks on the dispatcher supplied in [context].
+ *
+ * The context must contain a dispatcher confined to one thread. All [JsContext] operations associated with this
+ * event loop, including [attachTo], must be performed on that dispatcher's thread. [run] and [runAndComplete] may be
+ * called concurrently from coroutines outside this event loop; their executions are serialized internally.
+ */
 class JsEventLoop(
     context: CoroutineContext,
 ) : CoroutineScope {
     @Volatile
     var onCompletion: (isCancelled: Boolean, exception: Throwable?) -> Unit = { _, _ -> }
 
+    private val dispatcher =
+        requireNotNull(context[ContinuationInterceptor] as? CoroutineDispatcher) {
+            "JsEventLoop context must contain a single-threaded CoroutineDispatcher"
+        }.also {
+            require(it !== Dispatchers.Unconfined) {
+                "JsEventLoop does not support Dispatchers.Unconfined"
+            }
+        }
+    private val completionException = CompletableDeferred<Throwable?>()
+
     private val job =
         Job().apply {
-            invokeOnCompletion {
-                val dispatcher = context[CoroutineDispatcher] ?: Dispatchers.Unconfined
-                dispatcher.dispatch(context) {
+            invokeOnCompletion { cause ->
+                val exception = cause.unwrapCancellationException()
+                val handleCompletion: () -> Unit = {
                     jsTicks.forEach { tick -> tick.close() }
                     jsTicks.clear()
                     microtaskCheckpoints.forEach { checkpoint -> checkpoint.close() }
                     microtaskCheckpoints.clear()
+                    timerJobs.clear()
+                    completionException.complete(exception)
+                    onCompletion(cause != null, exception)
                 }
-                var exception = it
-                while (exception is CancellationException) {
-                    exception = exception.cause
+                if (dispatcher.isDispatchNeeded(coroutineContext)) {
+                    dispatcher.dispatch(coroutineContext) {
+                        handleCompletion()
+                    }
+                } else {
+                    handleCompletion()
                 }
-                onCompletion(it != null, exception)
             }
         }
 
@@ -107,12 +153,33 @@ class JsEventLoop(
     private val timerJobs = mutableScatterMapOf<String, Job>()
     private val lock = Mutex()
 
+    @Volatile
+    private var isCompleting = false
+
+    /**
+     * Attaches [context] to this event loop.
+     *
+     * Must be called on the thread of the dispatcher passed to [JsEventLoop]. May be called while the event loop is
+     * running. Attaching to an already closed event loop is allowed; native timer registration will report that it is
+     * closed.
+     */
     fun attachTo(context: JsContext) {
         require(context.core.eventLoop == null || context.core.eventLoop == this) { "JsContext already has an event loop" }
         if (context.core.eventLoop == this) {
             return
         }
+        val (jsTick, microtaskCheckpoint) = createAttachment(context)
         context.core.eventLoop = this
+        if (isCompleting || !job.isActive) {
+            jsTick.close()
+            microtaskCheckpoint.close()
+            return
+        }
+        jsTicks.add(jsTick)
+        microtaskCheckpoints.add(microtaskCheckpoint)
+    }
+
+    private fun createAttachment(context: JsContext): Pair<JsFunction, JsMicrotaskCheckpoint> =
         jsScoped(context) {
             lateinit var microtaskCheckpoint: JsMicrotaskCheckpoint
             val microtaskCallback =
@@ -130,10 +197,12 @@ class JsEventLoop(
                     val contextId = this.context.core.id
                     val jobId = "$contextId.$id"
                     if (shouldScheduleTimer) {
+                        check(!isCompleting && job.isActive) { "JsEventLoop is closed" }
                         val delayMs = it.getOrNull(2)?.longOrNull ?: 0L
                         val shouldRepeat = it.getOrNull(3)?.booleanOrNull ?: false
-                        timerJobs[jobId] =
-                            launch {
+                        val timerJob =
+                            launch(start = CoroutineStart.LAZY) {
+                                yield()
                                 do {
                                     delay(delayMs)
                                     if (shouldRepeat) {
@@ -144,6 +213,8 @@ class JsEventLoop(
                                     tick(contextId, id)
                                 } while (shouldRepeat)
                             }
+                        timerJobs[jobId] = timerJob
+                        timerJob.start()
                     } else {
                         timerJobs.remove(jobId)?.cancel()
                     }
@@ -238,13 +309,19 @@ class JsEventLoop(
                                 validateCallback(callback);
                                 const id = nextCallbackId();
                                 shouldRepeat = Boolean(shouldRepeat);
-                                scheduled.set(id, {
+                                const item = {
                                     id: id,
                                     callback: callback,
                                     args: args,
                                     shouldRepeat: shouldRepeat,
-                                });
-                                nativeTimerEvent(true, id, Number(delay) || 0, shouldRepeat);
+                                };
+                                scheduled.set(id, item);
+                                try {
+                                    nativeTimerEvent(true, id, Number(delay) || 0, shouldRepeat);
+                                } catch (e) {
+                                    scheduled.delete(id);
+                                    throw e;
+                                }
                                 return id;
                             },
                             remove(id) {
@@ -329,15 +406,19 @@ class JsEventLoop(
                 "microtaskCallback" to microtaskCallback,
             ).let {
                 it as JsObject
-                jsTicks.add((it["tick"] as JsFunction).escape())
-                microtaskCheckpoint =
-                    JsMicrotaskCheckpoint(
-                        runCheckpoint = (it["runMicrotaskCheckpoint"] as JsFunction).escape(),
-                    )
-                microtaskCheckpoints.add(microtaskCheckpoint)
+                val tick = (it["tick"] as JsFunction).escape()
+                try {
+                    microtaskCheckpoint =
+                        JsMicrotaskCheckpoint(
+                            runCheckpoint = (it["runMicrotaskCheckpoint"] as JsFunction).escape(),
+                        )
+                    tick to microtaskCheckpoint
+                } catch (e: Throwable) {
+                    tick.close()
+                    throw e
+                }
             }
         }
-    }
 
     private fun tick(
         contextId: Int? = null,
@@ -351,8 +432,10 @@ class JsEventLoop(
         var didRun = false
         do {
             shouldContinue = false
-            jsTicks.forEach { tick ->
-                if (!job.isActive || tick.isClosed) return@forEach
+            val tickCount = jsTicks.size
+            for (index in 0 until tickCount) {
+                val tick = jsTicks[index]
+                if (!job.isActive || tick.isClosed) continue
                 val tickShouldContinue =
                     jsScoped(tick.context) {
                         if (timerId != null &&
@@ -373,22 +456,41 @@ class JsEventLoop(
     }
 
     suspend fun runAndComplete() {
-        if (!job.isActive) {
-            return
-        }
-        lock.withLock {
-            _run()
-            job.complete()
-            job.join()
-        }
+        run(shouldComplete = true)
     }
 
     suspend fun run() {
-        if (!job.isActive) {
-            return
+        run(shouldComplete = false)
+    }
+
+    private suspend fun run(shouldComplete: Boolean) {
+        val callerContext = currentCoroutineContext()
+        check(!callerContext[Job].isDescendantOf(job)) {
+            "JsEventLoop.run() cannot be called from a coroutine belonging to this event loop"
         }
-        lock.withLock {
-            _run()
+        var shouldAwaitCompletion = false
+        try {
+            lock.withLock {
+                if (isCompleting || !job.isActive) {
+                    shouldAwaitCompletion = true
+                    return@withLock
+                }
+                _run()
+                if (shouldComplete) {
+                    isCompleting = true
+                    job.complete()
+                    shouldAwaitCompletion = true
+                }
+            }
+        } catch (e: CancellationException) {
+            callerContext.ensureActive()
+            if (job.isActive) {
+                throw e
+            }
+            shouldAwaitCompletion = true
+        }
+        if (shouldAwaitCompletion || !job.isActive) {
+            completionException.await()?.let { throw it }
         }
     }
 
@@ -410,19 +512,20 @@ class JsEventLoop(
                 }
             }
             if (hasChildren) continue
-            val didRunAfterMicrotasks =
+            val shouldContinueAfterMicrotasks =
                 withContext(coroutineContext) {
+                    val contextCount = microtaskCheckpoints.size
                     withTimeoutOrNull(10000) {
-                        microtaskCheckpoints.forEach {
+                        for (index in 0 until contextCount) {
                             if (!job.isActive) {
                                 return@withTimeoutOrNull
                             }
-                            it.await()
+                            microtaskCheckpoints[index].await()
                         }
                     }
-                    tick()
+                    tick() || contextCount != microtaskCheckpoints.size
                 }
-            if (didRunAfterMicrotasks) continue
+            if (shouldContinueAfterMicrotasks || job.children.any()) continue
             break
         }
     }
