@@ -71,50 +71,33 @@ internal actual class JsWebViewBlockingRequest<T> {
 private class AndroidJsWebView(
     private val webView: WebView,
 ) : JsWebView {
-    private val mainHandler = Handler(Looper.getMainLooper())
-
     override var onMessage: (String) -> Unit = {}
 
     init {
-        runOnWebViewThreadBlocking {
+        runOnMainThreadBlocking {
             webView.settings.javaScriptEnabled = true
             webView.addJavascriptInterface(NativeBridge(), JS_WEB_VIEW_ANDROID_INTERFACE)
             webView.evaluateJavascript(jsPromiseRejectionTrackingScript, null)
         }
     }
 
-    private val isOnWebViewThread: Boolean
-        get() = Looper.myLooper() == Looper.getMainLooper()
-
     override fun close() {
-        runOnWebViewThread {
+        AndroidMainThread.dispatch {
             webView.removeJavascriptInterface(JS_WEB_VIEW_ANDROID_INTERFACE)
             webView.destroy()
         }
     }
 
     override fun evaluateJavaScript(script: String) {
-        runOnWebViewThread {
+        AndroidMainThread.dispatch {
             webView.evaluateJavascript(script, null)
         }
     }
 
-    private fun runOnWebViewThread(block: () -> Unit) {
-        if (isOnWebViewThread) {
-            block()
-        } else {
-            mainHandler.post(block)
-        }
-    }
-
-    private fun runOnWebViewThreadBlocking(block: () -> Unit) {
-        if (isOnWebViewThread) {
-            block()
-            return
-        }
+    private fun runOnMainThreadBlocking(block: () -> Unit) {
         val latch = CountDownLatch(1)
         var result: Result<Unit>? = null
-        mainHandler.post {
+        AndroidMainThread.dispatch {
             result = runCatching { block() }
             latch.countDown()
         }

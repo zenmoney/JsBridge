@@ -13,6 +13,8 @@ import kotlin.Throws
 actual sealed class JsContext actual constructor(
     unit: Unit,
 ) : AutoCloseable {
+    companion object {}
+
     internal actual abstract val core: JsContextCore
     actual abstract var getPlainValueOf: JsScope.(value: JsValue, state: JsPlainValueState) -> Any?
     actual abstract val globalThis: JsObject
