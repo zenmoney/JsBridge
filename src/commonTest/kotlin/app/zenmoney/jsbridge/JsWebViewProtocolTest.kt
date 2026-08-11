@@ -54,6 +54,16 @@ class JsWebViewProtocolTest {
     }
 
     @Test
+    fun encodesFireAndForgetCommand() {
+        val command = JsWebViewMessage.Release(7)
+
+        assertEquals(
+            """__appZenmoneyJsBridge.dispatch(["r",7]);""",
+            command.toScript(),
+        )
+    }
+
+    @Test
     fun encodesNativeCallbackCommands() {
         val complete =
             JsWebViewMessage.CompleteNativeCallback(

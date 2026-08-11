@@ -256,11 +256,7 @@ class JsWebViewContext internal constructor(
     override fun closeValue(value: JsValue) {
         if (value is JsWebViewObject && !value.isSingleton()) {
             if (releaseWebViewHandle(value.handle)) {
-                executeWebViewMessageBlockingAndDecode(
-                    message = JsWebViewMessage.Release(value.handle),
-                    debug = "release",
-                    allowWhileClosing = true,
-                )
+                sendWebViewCommand(JsWebViewMessage.Release(value.handle))
             }
         }
         core.removeValue(value)
@@ -352,7 +348,7 @@ class JsWebViewContext internal constructor(
             jsFunctionScoped(this) {
                 _thiz = createWebViewValue(thiz).autoClose()
                 val result = callback(args.map(::createWebViewValue).autoClose())
-                sendWebViewMessage(
+                sendWebViewCommand(
                     JsWebViewMessage.CompleteNativeCallback(
                         jsCallbackId = jsCallbackId,
                         result = createWebViewProtocolValue(result),
@@ -361,7 +357,7 @@ class JsWebViewContext internal constructor(
             }
         } catch (e: Throwable) {
             if (e is JsWebViewThrownError) {
-                sendWebViewMessage(
+                sendWebViewCommand(
                     JsWebViewMessage.FailNativeCallback(
                         jsCallbackId = jsCallbackId,
                         error = e.error,
@@ -369,7 +365,7 @@ class JsWebViewContext internal constructor(
                 )
             } else {
                 createError(e).use { error ->
-                    sendWebViewMessage(
+                    sendWebViewCommand(
                         JsWebViewMessage.FailNativeCallback(
                             jsCallbackId = jsCallbackId,
                             error = createWebViewProtocolValue(error),
@@ -410,7 +406,6 @@ class JsWebViewContext internal constructor(
             executeWebViewMessageBlocking(
                 JsWebViewMessage.ReadUint8Array(handle),
                 "readUint8Array",
-                allowWhileClosing = false,
             ).decodeByteArray()
         } catch (e: JsWebViewThrownError) {
             throw createWebViewValue(e.error).use { createException(it) }
@@ -419,10 +414,9 @@ class JsWebViewContext internal constructor(
     internal fun executeWebViewMessageBlockingAndDecode(
         message: JsWebViewMessage,
         debug: String,
-        allowWhileClosing: Boolean = false,
     ): JsValue =
         try {
-            createWebViewValue(executeWebViewMessageBlocking(message, debug, allowWhileClosing))
+            createWebViewValue(executeWebViewMessageBlocking(message, debug))
         } catch (e: JsWebViewThrownError) {
             throw createWebViewValue(e.error).use { createException(it) }
         }
@@ -430,10 +424,9 @@ class JsWebViewContext internal constructor(
     private fun executeWebViewMessageBlocking(
         message: JsWebViewMessage,
         debug: String,
-        allowWhileClosing: Boolean,
     ): JsWebViewProtocolValue {
         val request = JsWebViewBlockingRequest<JsWebViewProtocolValue>()
-        val id = executeWebViewMessage(message, allowWhileClosing, request::complete)
+        val id = executeWebViewMessage(message, request::complete)
         try {
             return request.await(debug)
         } finally {
@@ -445,10 +438,9 @@ class JsWebViewContext internal constructor(
 
     private fun executeWebViewMessage(
         message: JsWebViewMessage,
-        allowWhileClosing: Boolean,
         complete: (Result<JsWebViewProtocolValue>) -> Unit,
     ): Int {
-        if (isClosed || (isClosing && !allowWhileClosing)) {
+        if (isClosing || isClosed) {
             complete(Result.failure(IllegalStateException("JsContext is closed")))
             return -1
         }
@@ -464,7 +456,7 @@ class JsWebViewContext internal constructor(
         return id
     }
 
-    private fun sendWebViewMessage(message: JsWebViewMessage) {
+    private fun sendWebViewCommand(message: JsWebViewMessage) {
         if (isClosing || isClosed) return
         getOrCreateWebView().evaluateJavaScript(message.toScript())
     }

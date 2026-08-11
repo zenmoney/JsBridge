@@ -1031,6 +1031,11 @@ internal val jsWebViewRuntimeScript: String =
                     return;
                 }
 
+                if (message[0] === ${JsWebViewProtocolCode.COMMAND_RELEASE.toJson()}) {
+                    runCommand(message);
+                    return;
+                }
+
                 const jsCallbackId = message[1];
                 const callback = pendingJsCallbacks.get(jsCallbackId);
                 if (!callback) {

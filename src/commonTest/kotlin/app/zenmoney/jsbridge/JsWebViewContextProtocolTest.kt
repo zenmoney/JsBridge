@@ -90,6 +90,39 @@ class JsWebViewContextProtocolTest {
     }
 
     @Test
+    fun releasesHandlesWithoutWaitingForResponse() {
+        val webView =
+            FakeJsWebView { script ->
+                requestIdRegex.find(script)?.let {
+                    onMessage("""["r",${it.groupValues[1]},["h",7]]""")
+                }
+            }
+        val context = JsWebViewContext(webView)
+        val value = context.evaluateScript("({})")
+
+        value.close()
+
+        assertEquals("""__appZenmoneyJsBridge.dispatch(["r",7]);""", webView.scripts.last())
+        context.close()
+    }
+
+    @Test
+    fun doesNotReleaseHandlesWhileClosingContext() {
+        val webView =
+            FakeJsWebView { script ->
+                requestIdRegex.find(script)?.let {
+                    onMessage("""["r",${it.groupValues[1]},["h",7]]""")
+                }
+            }
+        val context = JsWebViewContext(webView)
+        context.evaluateScript("({})")
+
+        context.close()
+
+        assertTrue(JsWebViewMessage.Release(7).toScript() !in webView.scripts)
+    }
+
+    @Test
     fun closeCancelsPendingRequestsAndClosesWebView() =
         runTest {
             val evaluated = CompletableDeferred<Unit>()
