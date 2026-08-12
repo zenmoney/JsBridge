@@ -7,6 +7,8 @@ import com.eclipsesource.v8.V8Function
 import com.eclipsesource.v8.V8Object
 import com.eclipsesource.v8.V8TypedArray
 import com.eclipsesource.v8.V8Value
+import kotlinx.coroutines.DisposableHandle
+import kotlinx.coroutines.Job
 import java.nio.ByteBuffer
 import kotlin.Throws
 
@@ -68,6 +70,10 @@ actual sealed class JsContext actual constructor(
     internal actual abstract fun <T : JsValue> createValueAlias(value: T): T
 
     internal actual abstract fun closeValue(value: JsValue)
+
+    actual fun invokeOnClose(handler: () -> Unit): DisposableHandle = core.invokeOnClose(handler)
+
+    actual fun closeAsync(): Job = core.closeAsync()
 
     actual abstract override fun close()
 
@@ -515,14 +521,14 @@ actual class JsEngineContext :
         core.removeValue(value)
     }
 
-    actual override fun close() {
-        core.close()
-        jsGetTime.closeQuietly()
-        jsTypeOf.closeQuietly()
-        jsEvaluateScript.closeQuietly()
-        jsGetValue.closeQuietly()
-        v8Runtime.close()
-    }
+    actual override fun close() =
+        core.close {
+            jsGetTime.closeQuietly()
+            jsTypeOf.closeQuietly()
+            jsEvaluateScript.closeQuietly()
+            jsGetValue.closeQuietly()
+            v8Runtime.close()
+        }
 
     actual override fun getObjectValue(
         obj: JsArray,

@@ -1,5 +1,7 @@
 package app.zenmoney.jsbridge
 
+import kotlinx.coroutines.DisposableHandle
+import kotlinx.coroutines.Job
 import platform.JavaScriptCore.JSContext
 import platform.JavaScriptCore.JSValue
 import platform.JavaScriptCore.objectForKeyedSubscript
@@ -61,6 +63,10 @@ actual sealed class JsContext actual constructor(
     internal actual abstract fun <T : JsValue> createValueAlias(value: T): T
 
     internal actual abstract fun closeValue(value: JsValue)
+
+    actual fun invokeOnClose(handler: () -> Unit): DisposableHandle = core.invokeOnClose(handler)
+
+    actual fun closeAsync(): Job = core.closeAsync()
 
     actual abstract override fun close()
 
@@ -474,21 +480,21 @@ actual class JsEngineContext :
         core.removeValue(value)
     }
 
-    actual override fun close() {
-        core.close()
-        _jsContext = null
-        jsCallFunction = null
-        jsBoolean = null
-        jsDate = null
-        jsDefineProperty = null
-        jsError = null
-        jsNumber = null
-        jsPromise = null
-        jsString = null
-        jsTypeOf = null
-        jsUint8Array = null
-        jsWrapFunction = null
-    }
+    actual override fun close() =
+        core.close {
+            _jsContext = null
+            jsCallFunction = null
+            jsBoolean = null
+            jsDate = null
+            jsDefineProperty = null
+            jsError = null
+            jsNumber = null
+            jsPromise = null
+            jsString = null
+            jsTypeOf = null
+            jsUint8Array = null
+            jsWrapFunction = null
+        }
 
     actual override fun getObjectValue(
         obj: JsArray,

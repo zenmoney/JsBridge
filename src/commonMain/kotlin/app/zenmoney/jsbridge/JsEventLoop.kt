@@ -1,5 +1,6 @@
 package app.zenmoney.jsbridge
 
+import androidx.collection.ObjectList
 import androidx.collection.mutableIntObjectMapOf
 import androidx.collection.mutableObjectListOf
 import androidx.collection.mutableScatterMapOf
@@ -48,9 +49,31 @@ private fun Job?.isDescendantOf(parent: Job): Boolean {
     return false
 }
 
+private fun <T : Any> ObjectList<T>.findNextIndex(
+    current: T,
+    next: T?,
+): Int {
+    for (index in 0 until size) {
+        if (this[index] === current) {
+            return index + 1
+        }
+    }
+    if (next != null) {
+        for (index in 0 until size) {
+            if (this[index] === next) {
+                return index
+            }
+        }
+    }
+    return -1
+}
+
 private class JsMicrotaskCheckpoint(
     private val runCheckpoint: JsFunction,
 ) : AutoCloseable {
+    val context: JsContext
+        get() = runCheckpoint.context
+
     private var id = 0
     private var continuationById = mutableIntObjectMapOf<CancellableContinuation<Unit>>()
 
@@ -93,7 +116,7 @@ private class JsMicrotaskCheckpoint(
             continuations.add(it)
         }
         continuationById.clear()
-        continuations?.forEach { it.cancel() }
+        continuations?.forEach { it.resume(Unit) }
     }
 }
 
@@ -124,7 +147,7 @@ class JsEventLoop(
         Job().apply {
             invokeOnCompletion { cause ->
                 val exception = cause.unwrapCancellationException()
-                val handleCompletion: () -> Unit = {
+                dispatch {
                     jsTicks.forEach { tick -> tick.close() }
                     jsTicks.clear()
                     microtaskCheckpoints.forEach { checkpoint -> checkpoint.close() }
@@ -132,13 +155,6 @@ class JsEventLoop(
                     timerJobs.clear()
                     completionException.complete(exception)
                     onCompletion(cause != null, exception)
-                }
-                if (dispatcher.isDispatchNeeded(coroutineContext)) {
-                    dispatcher.dispatch(coroutineContext) {
-                        handleCompletion()
-                    }
-                } else {
-                    handleCompletion()
                 }
             }
         }
@@ -164,6 +180,7 @@ class JsEventLoop(
      * closed.
      */
     fun attachTo(context: JsContext) {
+        check(!context.isClosed) { "JsContext is already closed" }
         require(context.core.eventLoop == null || context.core.eventLoop == this) { "JsContext already has an event loop" }
         if (context.core.eventLoop == this) {
             return
@@ -177,6 +194,36 @@ class JsEventLoop(
         }
         jsTicks.add(jsTick)
         microtaskCheckpoints.add(microtaskCheckpoint)
+    }
+
+    internal fun dispatch(block: () -> Unit) {
+        if (dispatcher.isDispatchNeeded(coroutineContext)) {
+            dispatcher.dispatch(coroutineContext) { block() }
+        } else {
+            block()
+        }
+    }
+
+    internal fun detachFrom(context: JsContext) {
+        require(context.core.eventLoop == this) { "JsContext is not attached to this event loop" }
+        for (index in jsTicks.size - 1 downTo 0) {
+            if (jsTicks[index].context === context) {
+                jsTicks.removeAt(index).close()
+            }
+        }
+        for (index in microtaskCheckpoints.size - 1 downTo 0) {
+            if (microtaskCheckpoints[index].context === context) {
+                microtaskCheckpoints.removeAt(index).close()
+            }
+        }
+        val timerKeys = mutableListOf<String>()
+        val timerKeyPrefix = "${context.core.id}."
+        timerJobs.forEach { key, _ ->
+            if (key.startsWith(timerKeyPrefix)) {
+                timerKeys += key
+            }
+        }
+        timerKeys.forEach { key -> timerJobs.remove(key)?.cancel() }
     }
 
     private fun createAttachment(context: JsContext): Pair<JsFunction, JsMicrotaskCheckpoint> =
@@ -432,25 +479,47 @@ class JsEventLoop(
         var didRun = false
         do {
             shouldContinue = false
-            val tickCount = jsTicks.size
-            for (index in 0 until tickCount) {
+            var attachmentsChanged = false
+            var index = 0
+            while (index < jsTicks.size) {
                 val tick = jsTicks[index]
-                if (!job.isActive || tick.isClosed) continue
-                val tickShouldContinue =
-                    jsScoped(tick.context) {
-                        if (timerId != null &&
-                            contextId != null &&
-                            tick.context.core.id == contextId
-                        ) {
-                            tick(JsNumber(timerId))
+                val nextTick = if (index + 1 < jsTicks.size) jsTicks[index + 1] else null
+                if (job.isActive && !tick.isClosed) {
+                    val timerIdForTick =
+                        if (timerId != null && contextId != null && tick.context.core.id == contextId) {
+                            timerId
                         } else {
-                            tick()
-                        }.boolean
+                            null
+                        }
+                    val tickShouldContinue =
+                        jsScoped(tick.context) {
+                            if (timerIdForTick != null) {
+                                tick(JsNumber(timerIdForTick))
+                            } else {
+                                tick()
+                            }.boolean
+                        }
+                    if (timerIdForTick != null) {
+                        timerId = null
                     }
-                didRun = didRun || tickShouldContinue
-                shouldContinue = shouldContinue || tickShouldContinue
+                    didRun = didRun || tickShouldContinue
+                    shouldContinue = shouldContinue || tickShouldContinue
+                }
+                if (index < jsTicks.size && jsTicks[index] === tick) {
+                    index++
+                } else {
+                    index = jsTicks.findNextIndex(tick, nextTick)
+                    if (index < 0) {
+                        attachmentsChanged = true
+                        break
+                    }
+                }
             }
-            timerId = null
+            if (attachmentsChanged) {
+                shouldContinue = true
+            } else {
+                timerId = null
+            }
         } while (job.isActive && shouldContinue)
         return didRun
     }
@@ -514,16 +583,33 @@ class JsEventLoop(
             if (hasChildren) continue
             val shouldContinueAfterMicrotasks =
                 withContext(coroutineContext) {
-                    val contextCount = microtaskCheckpoints.size
+                    var attachmentsChanged = false
                     withTimeoutOrNull(10000) {
-                        for (index in 0 until contextCount) {
+                        var index = 0
+                        while (index < microtaskCheckpoints.size) {
                             if (!job.isActive) {
                                 return@withTimeoutOrNull
                             }
-                            microtaskCheckpoints[index].await()
+                            val checkpoint = microtaskCheckpoints[index]
+                            val nextCheckpoint =
+                                if (index + 1 < microtaskCheckpoints.size) {
+                                    microtaskCheckpoints[index + 1]
+                                } else {
+                                    null
+                                }
+                            checkpoint.await()
+                            if (index < microtaskCheckpoints.size && microtaskCheckpoints[index] === checkpoint) {
+                                index++
+                            } else {
+                                index = microtaskCheckpoints.findNextIndex(checkpoint, nextCheckpoint)
+                                if (index < 0) {
+                                    attachmentsChanged = true
+                                    return@withTimeoutOrNull
+                                }
+                            }
                         }
                     }
-                    tick() || contextCount != microtaskCheckpoints.size
+                    tick() || attachmentsChanged
                 }
             if (shouldContinueAfterMicrotasks || job.children.any()) continue
             break

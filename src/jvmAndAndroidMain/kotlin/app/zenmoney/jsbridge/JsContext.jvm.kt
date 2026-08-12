@@ -26,6 +26,8 @@ import com.caoccao.javet.values.reference.V8ValueObject
 import com.caoccao.javet.values.reference.V8ValuePromise
 import com.caoccao.javet.values.reference.V8ValueStringObject
 import com.caoccao.javet.values.reference.V8ValueTypedArray
+import kotlinx.coroutines.DisposableHandle
+import kotlinx.coroutines.Job
 import kotlin.Throws
 
 actual sealed class JsContext actual constructor(
@@ -84,6 +86,10 @@ actual sealed class JsContext actual constructor(
     internal actual abstract fun <T : JsValue> createValueAlias(value: T): T
 
     internal actual abstract fun closeValue(value: JsValue)
+
+    actual fun invokeOnClose(handler: () -> Unit): DisposableHandle = core.invokeOnClose(handler)
+
+    actual fun closeAsync(): Job = core.closeAsync()
 
     actual abstract override fun close()
 
@@ -515,12 +521,12 @@ actual class JsEngineContext :
         callbackContextHandles[callbackContextIndex++] = handle
     }
 
-    actual override fun close() {
-        core.close()
-        callbackContextHandles.forEach { v8Runtime.removeCallbackContext(it) }
-        callbackContextIndex = 0
-        v8Runtime.close()
-    }
+    actual override fun close() =
+        core.close {
+            callbackContextHandles.forEach { v8Runtime.removeCallbackContext(it) }
+            callbackContextIndex = 0
+            v8Runtime.close()
+        }
 
     actual override fun getObjectValue(
         obj: JsArray,

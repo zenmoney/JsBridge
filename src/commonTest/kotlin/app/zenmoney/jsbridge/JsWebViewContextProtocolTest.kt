@@ -7,6 +7,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -147,7 +148,53 @@ class JsWebViewContextProtocolTest {
             assertTrue(webView.isClosed)
         }
 
+    @Test
+    fun closeAsyncCancelsPendingProtocolRequest() =
+        runTest {
+            val evaluated = CompletableDeferred<Unit>()
+            val webView =
+                FakeJsWebView { script ->
+                    if (requestIdRegex.containsMatchIn(script)) {
+                        evaluated.complete(Unit)
+                    }
+                }
+            val context = JsWebViewContext(webView)
+            val result =
+                async(Dispatchers.Default) {
+                    runCatching { context.evaluateScript("new Promise(() => {})") }
+                }
+
+            evaluated.await()
+            val closeJob = context.closeAsync()
+
+            assertEquals("JsContext is closed", result.await().exceptionOrNull()?.message)
+            closeJob.join()
+            assertTrue(closeJob.isCompleted)
+        }
+
+    @Test
+    fun customWebViewCloseImplementationControlsDisposal() {
+        var wasDisposed = false
+        val webView =
+            FakeJsWebView(
+                onEvaluate = { script ->
+                    requestIdRegex.find(script)?.let {
+                        onMessage("""["r",${it.groupValues[1]},["u"]]""")
+                    }
+                },
+                onClose = { wasDisposed = true },
+            )
+        val context = JsWebViewContext(webView)
+
+        context.evaluateScript("undefined")
+        context.close()
+
+        assertTrue(wasDisposed)
+        assertFalse(webView.isClosed)
+    }
+
     private class FakeJsWebView(
+        private val onClose: FakeJsWebView.() -> Unit = { isClosed = true },
         private val onEvaluate: FakeJsWebView.(String) -> Unit = {},
     ) : JsWebView {
         override var onMessage: (String) -> Unit = {}
@@ -160,7 +207,7 @@ class JsWebViewContextProtocolTest {
         }
 
         override fun close() {
-            isClosed = true
+            onClose()
         }
     }
 

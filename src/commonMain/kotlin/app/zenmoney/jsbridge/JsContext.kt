@@ -1,6 +1,13 @@
+@file:OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+
 package app.zenmoney.jsbridge
 
+import co.touchlab.stately.concurrency.Lock
+import co.touchlab.stately.concurrency.withLock
+import kotlinx.coroutines.DisposableHandle
+import kotlinx.coroutines.Job
 import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.incrementAndFetch
 
@@ -64,6 +71,19 @@ expect sealed class JsContext(
 
     internal abstract fun closeValue(value: JsValue)
 
+    /**
+     * Registers a thread-safe callback invoked when this context starts closing. The callback is invoked immediately
+     * when the context is already closed and must not access JavaScript values.
+     */
+    fun invokeOnClose(handler: () -> Unit): DisposableHandle
+
+    /**
+     * Marks this context closed, schedules cleanup on its event-loop dispatcher, and returns a job completed after
+     * cleanup. Cancelling the returned job does not cancel closing the context.
+     */
+    fun closeAsync(): Job
+
+    /** Closes this context synchronously. Must be called on the thread that owns the JavaScript runtime. */
     abstract override fun close()
 
     internal abstract fun getObjectValue(
@@ -331,12 +351,30 @@ class JsPlainValueState internal constructor() {
 private val index = AtomicInt(0)
 
 internal class JsContextCore(
-    context: JsContext,
-) : AutoCloseable {
+    private val context: JsContext,
+) {
+    private companion object {
+        const val STATE_ACTIVE = 0
+        const val STATE_NOTIFYING_CLOSE = 1
+        const val STATE_CLOSING = 2
+        const val STATE_CLOSED = 3
+    }
+
+    private class CloseHandler(
+        val handler: () -> Unit,
+    )
+
     @Suppress("PropertyName")
     internal var _scope: JsScope? = JsScope().also { it._context = context }
     var scopeValuesPool: MutableList<ArrayList<AutoCloseable>>? = arrayListOf()
     var eventLoop: JsEventLoop? = null
+
+    private val state = AtomicInt(STATE_ACTIVE)
+    private val isCloseCleanupStarted = AtomicInt(0)
+    private val closeHandlersLock = Lock()
+    private val closeHandlers = linkedSetOf<CloseHandler>()
+    private val closeHandlerFailure = AtomicReference<Throwable?>(null)
+    private val closeJob = Job()
 
     @OptIn(ExperimentalAtomicApi::class)
     val id = index.incrementAndFetch()
@@ -346,8 +384,55 @@ internal class JsContextCore(
     private var tagSetter: JsFunction? = null
     private var plainValueFrame: PlainValueFrame? = null
 
+    val isClosed: Boolean
+        get() = state.load() != STATE_ACTIVE
+
     val scope: JsScope
-        get() = checkNotNull(_scope) { "JsContext is already closed" }
+        get() {
+            check(!isClosed) { "JsContext is already closed" }
+            return checkNotNull(_scope) { "JsContext is already closed" }
+        }
+
+    fun invokeOnClose(handler: () -> Unit): DisposableHandle {
+        val closeHandler = CloseHandler(handler)
+        var invokeImmediately = false
+        withCloseHandlers { handlers ->
+            if (state.load() == STATE_ACTIVE) {
+                handlers += closeHandler
+            } else {
+                invokeImmediately = true
+            }
+        }
+        if (invokeImmediately) {
+            handler()
+        }
+        return object : DisposableHandle {
+            override fun dispose() {
+                withCloseHandlers { handlers -> handlers -= closeHandler }
+            }
+        }
+    }
+
+    fun closeAsync(): Job {
+        if (beginClose()) {
+            val closeContext = {
+                // The failure, if any, is retained by [closeJob] and reflected by the returned waiter job.
+                runCatching { context.close() }
+                Unit
+            }
+            val attachedEventLoop = eventLoop
+            if (attachedEventLoop == null) {
+                closeContext()
+            } else {
+                try {
+                    attachedEventLoop.dispatch(closeContext)
+                } catch (_: Throwable) {
+                    closeContext()
+                }
+            }
+        }
+        return createClosedWaiter()
+    }
 
     fun addValue(value: JsValue) {
         scope.tryAutoClose(value)
@@ -519,15 +604,84 @@ internal class JsContextCore(
         }
     }
 
-    override fun close() {
-        scopeValuesPool = null
-        _scope.also { _scope = null }?.close()
-        eventLoop = null
-        tag = null
-        tagReader = null
-        tagSetter = null
-        plainValueFrame = null
+    fun close(closeRuntime: () -> Unit) {
+        beginClose()
+        // A close handler may call close() recursively while beginClose() is still notifying handlers.
+        // The original close call will perform cleanup after notification finishes.
+        if (state.load() == STATE_NOTIFYING_CLOSE || !isCloseCleanupStarted.compareAndSet(0, 1)) {
+            return
+        }
+
+        var failure = closeHandlerFailure.load()
+        try {
+            eventLoop?.detachFrom(context)
+            scopeValuesPool = null
+            _scope.also { _scope = null }?.close()
+            eventLoop = null
+            tag = null
+            tagReader = null
+            tagSetter = null
+            plainValueFrame = null
+            closeRuntime()
+        } catch (e: Throwable) {
+            if (failure == null) {
+                failure = e
+            } else {
+                failure.addSuppressed(e)
+            }
+        } finally {
+            state.store(STATE_CLOSED)
+        }
+
+        if (failure == null) {
+            closeJob.complete()
+        } else {
+            closeJob.completeExceptionally(failure)
+            throw failure
+        }
     }
+
+    private fun createClosedWaiter(): Job {
+        val waiter = Job()
+        val registration =
+            closeJob.invokeOnCompletion { cause ->
+                if (cause == null) {
+                    waiter.complete()
+                } else {
+                    waiter.completeExceptionally(cause)
+                }
+            }
+        waiter.invokeOnCompletion { registration.dispose() }
+        return waiter
+    }
+
+    private fun beginClose(): Boolean {
+        if (!state.compareAndSet(STATE_ACTIVE, STATE_NOTIFYING_CLOSE)) {
+            return false
+        }
+        val handlers =
+            withCloseHandlers {
+                it.toList().also { closeHandlers -> it.clear() }
+            }
+        var failure: Throwable? = null
+        handlers.forEach { closeHandler ->
+            try {
+                closeHandler.handler()
+            } catch (e: Throwable) {
+                if (failure == null) {
+                    failure = e
+                } else {
+                    failure.addSuppressed(e)
+                }
+            }
+        }
+        closeHandlerFailure.store(failure)
+        state.store(STATE_CLOSING)
+        return true
+    }
+
+    private inline fun <T> withCloseHandlers(block: (MutableSet<CloseHandler>) -> T): T =
+        closeHandlersLock.withLock { block(closeHandlers) }
 
     private fun Any?.isReferencePlainValue(): Boolean = this != null && this !is Boolean && this !is Number && this !is String
 
@@ -538,7 +692,7 @@ internal class JsContextCore(
 }
 
 val JsContext.isClosed: Boolean
-    get() = core._scope == null
+    get() = core.isClosed
 
 val JsContext.eventLoop: JsEventLoop?
     get() = core.eventLoop

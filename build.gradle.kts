@@ -49,6 +49,7 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
+                implementation("co.touchlab:stately-concurrency:2.1.0")
                 implementation("androidx.collection:collection:1.5.0")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
             }

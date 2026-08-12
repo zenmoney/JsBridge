@@ -23,10 +23,13 @@ fun JsWebViewContext(context: Context): JsWebViewContext {
 }
 
 @Suppress("FunctionName")
-fun JsWebViewContext(webView: WebView): JsWebViewContext =
-    JsWebViewContext {
-        AndroidJsWebView(webView)
-    }
+fun JsWebViewContext(
+    webView: WebView,
+    disposeWebView: (WebView) -> Unit = WebView::destroy,
+): JsWebViewContext =
+    JsWebViewContext(
+        createWebView = { AndroidJsWebView(webView, disposeWebView) },
+    )
 
 internal actual fun createJsWebView(): JsWebView =
     AndroidJsWebView(
@@ -70,6 +73,7 @@ internal actual class JsWebViewBlockingRequest<T> {
 
 private class AndroidJsWebView(
     private val webView: WebView,
+    private val disposeWebView: (WebView) -> Unit = WebView::destroy,
 ) : JsWebView {
     override var onMessage: (String) -> Unit = {}
 
@@ -82,9 +86,9 @@ private class AndroidJsWebView(
     }
 
     override fun close() {
-        AndroidMainThread.dispatch {
+        runOnMainThreadBlocking {
             webView.removeJavascriptInterface(JS_WEB_VIEW_ANDROID_INTERFACE)
-            webView.destroy()
+            disposeWebView(webView)
         }
     }
 

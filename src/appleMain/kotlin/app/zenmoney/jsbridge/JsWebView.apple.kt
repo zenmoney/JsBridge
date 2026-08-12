@@ -26,10 +26,13 @@ import kotlin.concurrent.Volatile
 
 @OptIn(ExperimentalForeignApi::class)
 @Suppress("FunctionName")
-fun JsWebViewContext(webView: WKWebView): JsWebViewContext =
-    JsWebViewContext {
-        AppleJsWebView(webView)
-    }
+fun JsWebViewContext(
+    webView: WKWebView,
+    disposeWebView: (WKWebView) -> Unit = WKWebView::stopLoading,
+): JsWebViewContext =
+    JsWebViewContext(
+        createWebView = { AppleJsWebView(webView, disposeWebView) },
+    )
 
 @OptIn(ExperimentalForeignApi::class)
 @Suppress("FunctionName")
@@ -104,6 +107,7 @@ internal actual class JsWebViewBlockingRequest<T> {
 
 private class AppleJsWebView(
     private val webView: WKWebView,
+    private val disposeWebView: (WKWebView) -> Unit = WKWebView::stopLoading,
 ) : JsWebView {
     private val messageQueue = dispatch_queue_create("app.zenmoney.jsbridge.messages", null)
     private val messageHandler = AppleMessageHandler(this)
@@ -120,9 +124,9 @@ private class AppleJsWebView(
         get() = NSThread.isMainThread()
 
     override fun close() {
-        runOnWebViewThread {
+        runOnWebViewThreadBlocking {
             webView.configuration.userContentController.removeScriptMessageHandlerForName(JS_WEB_VIEW_IOS_HANDLER)
-            webView.stopLoading()
+            disposeWebView(webView)
         }
     }
 

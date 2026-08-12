@@ -1,8 +1,8 @@
 package app.zenmoney.jsbridge
 
+import co.touchlab.stately.concurrency.Lock
+import co.touchlab.stately.concurrency.withLock
 import kotlinx.coroutines.launch
-import kotlin.concurrent.atomics.AtomicInt
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 private class JsWebViewThrownError(
     val error: JsWebViewProtocolValue,
@@ -12,27 +12,29 @@ private const val NATIVE_EXCEPTION_TAG = "app.zenmoney.jsbridge.nativeException"
 
 private typealias JsWebViewPendingRequests = MutableMap<Int, (Result<JsWebViewProtocolValue>) -> Unit>
 
-@OptIn(ExperimentalAtomicApi::class)
 class JsWebViewContext internal constructor(
     private val createWebView: () -> JsWebView,
 ) : JsContext(Unit) {
     companion object {}
 
-    constructor() : this (::createJsWebView)
+    constructor() : this(createWebView = ::createJsWebView)
 
-    internal constructor(webView: JsWebView) : this({ webView })
+    internal constructor(webView: JsWebView) : this(createWebView = { webView })
 
     override val core = JsContextCore(this)
     override var getPlainValueOf: JsScope.(value: JsValue, state: JsPlainValueState) -> Any? = { value, state ->
         toBasicPlainValue(value, state)
     }
 
-    private var isClosed = false
-    private var isClosing = false
-
     private var requestId = 1
-    private val pendingRequestsLock = AtomicInt(0)
+    private val pendingRequestsLock = Lock()
     private val pendingRequests: JsWebViewPendingRequests = mutableMapOf()
+
+    init {
+        invokeOnClose {
+            cancelPendingRequests(takePendingRequests())
+        }
+    }
 
     private var webView: JsWebView? = null
     private val webViewMessageHandler =
@@ -263,18 +265,15 @@ class JsWebViewContext internal constructor(
     }
 
     override fun close() {
-        if (isClosing || isClosed) return
-        isClosing = true
-        cancelPendingRequests(takePendingRequests())
-        core.close()
-        isClosed = true
-        cancelPendingRequests(takePendingRequests())
-        functionByCallbackId.clear()
-        promiseExecutorByCallbackId.clear()
-        functionCallbackIds.clear()
-        tagsByHandle.clear()
-        refCounts.clear()
-        closeWebView()
+        core.close {
+            cancelPendingRequests(takePendingRequests())
+            functionByCallbackId.clear()
+            promiseExecutorByCallbackId.clear()
+            functionCallbackIds.clear()
+            tagsByHandle.clear()
+            refCounts.clear()
+            closeWebView()
+        }
     }
 
     override fun getObjectValue(
@@ -440,13 +439,16 @@ class JsWebViewContext internal constructor(
         message: JsWebViewMessage,
         complete: (Result<JsWebViewProtocolValue>) -> Unit,
     ): Int {
-        if (isClosing || isClosed) {
+        var id = -1
+        withPendingRequests {
+            if (!core.isClosed) {
+                id = requestId++
+                it[id] = complete
+            }
+        }
+        if (id < 0) {
             complete(Result.failure(IllegalStateException("JsContext is closed")))
             return -1
-        }
-        val id = requestId++
-        withPendingRequests {
-            it[id] = complete
         }
         try {
             getOrCreateWebView().evaluateJavaScript(message.toScript(id))
@@ -457,7 +459,7 @@ class JsWebViewContext internal constructor(
     }
 
     private fun sendWebViewCommand(message: JsWebViewMessage) {
-        if (isClosing || isClosed) return
+        if (core.isClosed) return
         getOrCreateWebView().evaluateJavaScript(message.toScript())
     }
 
@@ -486,8 +488,8 @@ class JsWebViewContext internal constructor(
         }
 
     private fun getOrCreateWebView(): JsWebView {
+        check(!core.isClosed) { "JsContext is closed" }
         webView?.let { return it }
-        check(!isClosing && !isClosed) { "JsContext is closed" }
         return createWebView().also { createdWebView ->
             try {
                 createdWebView.onMessage = webViewMessageHandler::handle
@@ -509,20 +511,17 @@ class JsWebViewContext internal constructor(
     }
 
     private fun dispatchWebViewNativeCallback(block: () -> Unit) {
-        if (isClosing || isClosed) return
+        if (core.isClosed) return
         checkNotNull(core.eventLoop) { "JsContext has no event loop attached" }
-            .launch { block() }
+            .launch {
+                if (!core.isClosed) {
+                    block()
+                }
+            }
     }
 
-    private inline fun <T> withPendingRequests(block: (JsWebViewPendingRequests) -> T): T {
-        while (!pendingRequestsLock.compareAndSet(0, 1)) {
-        }
-        try {
-            return block(pendingRequests)
-        } finally {
-            pendingRequestsLock.store(0)
-        }
-    }
+    private inline fun <T> withPendingRequests(block: (JsWebViewPendingRequests) -> T): T =
+        pendingRequestsLock.withLock { block(pendingRequests) }
 
     private fun registerFunctionCallback(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): Int {
         val callbackId = callbackId++

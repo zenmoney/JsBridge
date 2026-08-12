@@ -1,13 +1,12 @@
 package app.zenmoney.jsbridge
 
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 expect sealed interface JsPromise : JsObject
 
@@ -81,6 +80,16 @@ internal suspend fun JsValue.awaitInScope(scope: JsScope): JsValue =
         .await()
         .fold({ it }, { throw it })
 
+private fun <T> CancellableContinuation<T>.resumeOnce(result: Result<T>) {
+    try {
+        resumeWith(result)
+    } catch (e: IllegalStateException) {
+        if (!isCompleted) {
+            throw e
+        }
+    }
+}
+
 @Suppress("FunctionName")
 private suspend fun JsValue._awaitInScope(scope: JsScope): JsValue {
     val thiz = this
@@ -90,24 +99,56 @@ private suspend fun JsValue._awaitInScope(scope: JsScope): JsValue {
             val then = (value as? JsObject)?.get("then") as? JsFunction ?: break
             value =
                 suspendCancellableCoroutine { cont ->
-                    then(
-                        JsFunction {
-                            cont.resume(it.firstOrNull()?.escape()?.also { value -> scope.autoClose(value) } ?: context.UNDEFINED)
-                            context.UNDEFINED
-                        },
-                        JsFunction {
-                            val exception =
-                                it.firstOrNull()?.let { error -> JsException(error) }
-                                    ?: JsException(
-                                        message = "Promise rejected with no error",
-                                        cause = null,
-                                        data = emptyMap(),
-                                    )
-                            cont.resumeWithException(exception)
-                            context.UNDEFINED
-                        },
-                        thiz = value,
-                    )
+                    val closeRegistration =
+                        context.invokeOnClose {
+                            cont.resumeOnce(Result.failure(IllegalStateException("JsContext is closed")))
+                        }
+                    cont.invokeOnCancellation {
+                        closeRegistration.dispose()
+                    }
+                    if (cont.isCompleted) {
+                        closeRegistration.dispose()
+                        return@suspendCancellableCoroutine
+                    }
+                    try {
+                        then(
+                            JsFunction {
+                                if (cont.isCompleted) {
+                                    return@JsFunction context.UNDEFINED
+                                }
+                                val result =
+                                    runCatching {
+                                        it.firstOrNull()?.escape()?.also { value -> scope.autoClose(value) } ?: context.UNDEFINED
+                                    }
+                                closeRegistration.dispose()
+                                cont.resumeOnce(result)
+                                context.UNDEFINED
+                            },
+                            JsFunction {
+                                if (cont.isCompleted) {
+                                    return@JsFunction context.UNDEFINED
+                                }
+                                val exception =
+                                    try {
+                                        it.firstOrNull()?.let { error -> JsException(error) }
+                                            ?: JsException(
+                                                message = "Promise rejected with no error",
+                                                cause = null,
+                                                data = emptyMap(),
+                                            )
+                                    } catch (e: Throwable) {
+                                        e
+                                    }
+                                closeRegistration.dispose()
+                                cont.resumeOnce(Result.failure(exception))
+                                context.UNDEFINED
+                            },
+                            thiz = value,
+                        )
+                    } catch (e: Throwable) {
+                        closeRegistration.dispose()
+                        cont.resumeOnce(Result.failure(e))
+                    }
                 }
         }
         if (value === thiz) JsValueAlias(thiz) else value

@@ -54,6 +54,88 @@ abstract class JsContextTest {
 
     abstract fun createContext(): JsContext
 
+    @Test
+    fun invokesCloseHandlersOnceAndSupportsDisposal() {
+        var invoked = 0
+        var disposedInvoked = 0
+        val handler: () -> Unit = { invoked++ }
+        context.invokeOnClose(handler)
+        context.invokeOnClose(handler).dispose()
+        context.invokeOnClose { disposedInvoked++ }.dispose()
+
+        context.close()
+        context.close()
+
+        assertEquals(1, invoked)
+        assertEquals(0, disposedInvoked)
+
+        var lateInvoked = 0
+        context.invokeOnClose { lateInvoked++ }.dispose()
+        assertEquals(1, lateInvoked)
+    }
+
+    @Test
+    fun closeAsyncNotifiesImmediatelyAndCompletesJobAfterCleanup() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+            var closeNotified = false
+            context.invokeOnClose { closeNotified = true }
+
+            val closeJob = context.closeAsync()
+
+            assertTrue(closeNotified)
+            assertTrue(context.isClosed)
+            assertFalse(closeJob.isCompleted)
+            closeJob.join()
+            assertTrue(closeJob.isCompleted)
+
+            eventLoop.cancel()
+            eventLoop.run()
+        }
+
+    @Test
+    fun cancellingCloseJobDoesNotCancelContextCleanup() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+
+            context.closeAsync().cancel()
+            val closeJob = context.closeAsync()
+
+            assertFalse(closeJob.isCompleted)
+            closeJob.join()
+            assertTrue(context.isClosed)
+
+            eventLoop.cancel()
+            eventLoop.run()
+        }
+
+    @Test
+    fun closingContextFailsPendingPromiseAwait() =
+        runTest {
+            val eventLoop =
+                JsEventLoop(coroutineContext).apply {
+                    attachTo(context)
+                }
+            val promise = context.evaluateScript("new Promise(() => {})")
+            val result =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    runCatching { promise.awaitEscaped() }
+                }
+
+            val closeJob = context.closeAsync()
+
+            assertEquals("JsContext is closed", result.await().exceptionOrNull()?.message)
+            closeJob.join()
+            eventLoop.cancel()
+            eventLoop.run()
+        }
+
     private fun isBigIntSupported(): Boolean =
         assertIs<JsBoolean>(
             context.evaluateScript("typeof BigInt === 'function'"),
@@ -456,6 +538,25 @@ abstract class JsContextTest {
                 )
             assertIs<JsObject>(result)
             assertEquals(JsNumber(context, 5), result.awaitEscaped())
+        }
+
+    @Test
+    fun ignoresSubsequentThenableCompletions() =
+        runTestWithEventLoop {
+            val thenable =
+                context.evaluateScript(
+                    """
+                    ({
+                        then(resolve, reject) {
+                            resolve(5);
+                            reject(new Error("late rejection"));
+                            resolve(6);
+                        },
+                    })
+                    """.trimIndent(),
+                )
+
+            assertEquals(JsNumber(context, 5), thenable.awaitEscaped(checkType = false))
         }
 
     @Test
