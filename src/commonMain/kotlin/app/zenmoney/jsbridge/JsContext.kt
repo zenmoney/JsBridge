@@ -383,6 +383,13 @@ internal class JsContextCore(
     private var tagReader: JsFunction? = null
     private var tagSetter: JsFunction? = null
     private var plainValueFrame: PlainValueFrame? = null
+    private var _valueReferences: JsValueReferenceStore? = null
+
+    val valueReferences: JsValueReferenceStore
+        get() {
+            check(!isClosed) { "JsContext is already closed" }
+            return _valueReferences ?: JsValueReferenceStore(context).also { _valueReferences = it }
+        }
 
     val isClosed: Boolean
         get() = state.load() != STATE_ACTIVE
@@ -614,6 +621,8 @@ internal class JsContextCore(
 
         var failure = closeHandlerFailure.load()
         try {
+            _valueReferences?.close()
+            _valueReferences = null
             eventLoop?.detachFrom(context)
             scopeValuesPool = null
             _scope.also { _scope = null }?.close()
@@ -693,6 +702,10 @@ internal class JsContextCore(
 
 val JsContext.isClosed: Boolean
     get() = core.isClosed
+
+/** Stable identifier that distinguishes this context for its lifetime. */
+val JsContext.id: Int
+    get() = core.id
 
 val JsContext.eventLoop: JsEventLoop?
     get() = core.eventLoop
