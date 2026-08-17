@@ -15,7 +15,11 @@ internal class JsStringImpl(
     JsString {
     override fun hashCode(): Int = toString().hashCode()
 
-    override fun equals(other: Any?): Boolean = other is JsStringImpl && toString() == other.toString()
+    override fun equals(other: Any?): Boolean =
+        other is JsString &&
+            other !is JsObject &&
+            context === other.context &&
+            toString() == other.toString()
 
     override fun toString(): String = v8Value.toString()
 }

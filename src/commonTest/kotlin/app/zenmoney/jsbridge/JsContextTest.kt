@@ -261,9 +261,11 @@ abstract class JsContextTest {
     @Test
     fun returnsBoolean() {
         val value = context.evaluateScript("true")
+        val expected = JsBoolean(context, true)
         assertIs<JsBoolean>(value)
         assertEquals(true, value.toBoolean())
-        assertEquals(JsBoolean(context, true), value)
+        assertEquals(expected, value)
+        assertEquals(expected.hashCode(), value.hashCode())
         assertEquals(value, context.createValueAlias(value))
     }
 
@@ -329,10 +331,87 @@ abstract class JsContextTest {
     @Test
     fun returnsString() {
         val value = context.evaluateScript("\"abc\"")
+        val expected = JsString(context, "abc")
         assertIs<JsString>(value)
         assertEquals("abc", value.toString())
-        assertEquals(JsString(context, "abc"), value)
+        assertEquals(expected, value)
+        assertEquals(expected.hashCode(), value.hashCode())
         assertEquals(value, context.createValueAlias(value))
+    }
+
+    @Test
+    fun valueHashCodesAreConsistentAcrossImplementations() {
+        val millis = 0x1_0000_0001L
+
+        assertEquals(0, context.NULL.hashCode())
+        assertEquals(1, context.UNDEFINED.hashCode())
+        assertEquals(true.hashCode(), JsBoolean(context, true).hashCode())
+        assertEquals(42.5.hashCode(), JsNumber(context, 42.5).hashCode())
+        assertEquals("value".hashCode(), JsString(context, "value").hashCode())
+        assertEquals(millis.toInt(), JsDate(context, millis).hashCode())
+    }
+
+    @Test
+    fun numberEqualityHandlesNaNAndSignedZeroConsistently() {
+        val nan = JsNumber(context, Double.NaN)
+        val evaluatedNan = context.evaluateScript("NaN")
+        assertEquals(nan, evaluatedNan)
+        assertEquals(evaluatedNan, nan)
+        assertEquals(nan.hashCode(), evaluatedNan.hashCode())
+
+        val zero = JsNumber(context, 0.0)
+        val negativeZero = context.evaluateScript("-0")
+        assertNotEquals(zero, negativeZero)
+        assertNotEquals(negativeZero, zero)
+    }
+
+    @Test
+    fun aliasesAreEqualAndHaveSameHashCode() {
+        val values =
+            listOf(
+                context.NULL,
+                context.UNDEFINED,
+                JsBoolean(context, true),
+                JsNumber(context, 42.5),
+                JsString(context, "value"),
+                JsBooleanObject(context, true),
+                JsNumberObject(context, 42.5),
+                JsStringObject(context, "value"),
+                JsDate(context, 0x1_0000_0001L),
+                context.createObject(),
+                context.evaluateScript("[1]"),
+                context.evaluateScript("(function () { return 1; })"),
+                context.evaluateScript("Promise.resolve(1)"),
+                JsUint8Array(context, byteArrayOf(1, 2, 3)),
+            )
+
+        values.forEach { value ->
+            val alias = context.createValueAlias(value)
+            assertEquals(value, alias)
+            assertEquals(alias, value)
+            assertEquals(value.hashCode(), alias.hashCode())
+        }
+    }
+
+    @Test
+    fun valuesFromDifferentContextsAreNotEqual() {
+        createContext().use { otherContext ->
+            val values =
+                listOf(
+                    context.NULL to otherContext.NULL,
+                    context.UNDEFINED to otherContext.UNDEFINED,
+                    JsBoolean(context, true) to JsBoolean(otherContext, true),
+                    JsNumber(context, 42.5) to JsNumber(otherContext, 42.5),
+                    JsString(context, "value") to JsString(otherContext, "value"),
+                    JsDate(context, 123) to JsDate(otherContext, 123),
+                    context.createObject() to otherContext.createObject(),
+                )
+
+            values.forEach { (value, otherValue) ->
+                assertNotEquals(value, otherValue)
+                assertNotEquals(otherValue, value)
+            }
+        }
     }
 
     @Test
@@ -404,6 +483,21 @@ abstract class JsContextTest {
         assertEquals(date, value)
         assertEquals(date.hashCode(), value.hashCode())
         assertEquals(value, context.createValueAlias(value))
+    }
+
+    @Test
+    fun dateEqualityAndHashCodeRemainStableAfterFirstAccess() {
+        val first = assertIs<JsDate>(context.evaluateScript("globalThis.date = new Date(123); date"))
+        val initialMillis = first.toMillis()
+        val initialHashCode = first.hashCode()
+
+        context.evaluateScript("date.setTime(456)")
+        val second = assertIs<JsDate>(context.evaluateScript("date"))
+
+        assertEquals(initialMillis, first.toMillis())
+        assertEquals(initialHashCode, first.hashCode())
+        assertEquals(456, second.toMillis())
+        assertNotEquals(first, second)
     }
 
     @Test

@@ -641,7 +641,7 @@ private class JsWebViewNull(
     JsNull {
     override fun toString(): String = "null"
 
-    override fun equals(other: Any?): Boolean = other is JsNull
+    override fun equals(other: Any?): Boolean = other is JsNull && context === other.context
 
     override fun hashCode(): Int = 0
 }
@@ -652,7 +652,7 @@ private class JsWebViewUndefined(
     JsUndefined {
     override fun toString(): String = "undefined"
 
-    override fun equals(other: Any?): Boolean = other is JsUndefined
+    override fun equals(other: Any?): Boolean = other is JsUndefined && context === other.context
 
     override fun hashCode(): Int = 1
 }
@@ -666,7 +666,8 @@ private class JsWebViewBoolean(
 
     override fun toString(): String = value.toString()
 
-    override fun equals(other: Any?): Boolean = other is JsBoolean && other !is JsObject && value == other.toBoolean()
+    override fun equals(other: Any?): Boolean =
+        other is JsBoolean && other !is JsObject && context === other.context && value == other.toBoolean()
 
     override fun hashCode(): Int = value.hashCode()
 }
@@ -680,7 +681,8 @@ private class JsWebViewNumber(
 
     override fun toString(): String = value.toString()
 
-    override fun equals(other: Any?): Boolean = other is JsNumber && other !is JsObject && value == other.toNumber().toDouble()
+    override fun equals(other: Any?): Boolean =
+        other is JsNumber && other !is JsObject && context === other.context && toNumber() == other.toNumber()
 
     override fun hashCode(): Int = value.hashCode()
 }
@@ -692,7 +694,8 @@ private class JsWebViewString(
     JsString {
     override fun toString(): String = value
 
-    override fun equals(other: Any?): Boolean = other is JsString && other !is JsObject && value == other.toString()
+    override fun equals(other: Any?): Boolean =
+        other is JsString && other !is JsObject && context === other.context && value == other.toString()
 
     override fun hashCode(): Int = value.hashCode()
 }
@@ -788,15 +791,18 @@ private class JsWebViewDate(
     handle: Int,
 ) : JsWebViewObject(context, handle, JsWebViewProtocolHandleType.DATE),
     JsDate {
-    override fun toMillis(): Long {
-        val context = context as JsWebViewContext
-        val getTime = context.getObjectValue(this, "getTime") as JsFunction
-        return (context.callFunction(getTime, emptyList(), this) as JsNumber).toNumber().toLong()
+    private val millis by lazy(LazyThreadSafetyMode.NONE) {
+        jsScoped(context) {
+            val getTime = context.getObjectValue(this@JsWebViewDate, "getTime") as JsFunction
+            (context.callFunction(getTime, emptyList(), this@JsWebViewDate) as JsNumber).toNumber().toLong()
+        }
     }
 
-    override fun equals(other: Any?): Boolean = other is JsDate && toMillis() == other.toMillis()
+    override fun toMillis(): Long = millis
 
-    override fun hashCode(): Int = toMillis().hashCode()
+    override fun equals(other: Any?): Boolean = other is JsDate && context === other.context && toMillis() == other.toMillis()
+
+    override fun hashCode(): Int = toMillis().toInt()
 }
 
 private class JsWebViewUint8Array(

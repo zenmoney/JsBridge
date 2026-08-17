@@ -30,5 +30,5 @@ internal open class JsValueImpl(
 
     override fun hashCode(): Int = jsValue.hashCode()
 
-    override fun equals(other: Any?): Boolean = other is JsValueImpl && context == other.context && jsValue.isEqualToObject(other.jsValue)
+    override fun equals(other: Any?): Boolean = other is JsValueImpl && context === other.context && jsValue.isEqualToObject(other.jsValue)
 }

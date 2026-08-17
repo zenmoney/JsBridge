@@ -8,4 +8,8 @@ internal open class JsUndefinedImpl(
     context: JsContext,
     jsValue: JSValue,
 ) : JsValueImpl(context, jsValue),
-    JsUndefined
+    JsUndefined {
+    override fun equals(other: Any?): Boolean = other is JsUndefined && context === other.context
+
+    override fun hashCode(): Int = 1
+}

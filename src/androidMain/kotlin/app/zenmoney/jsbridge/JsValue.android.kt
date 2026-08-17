@@ -22,5 +22,5 @@ internal open class JsValueImpl(
 
     override fun hashCode(): Int = v8Value.hashCode()
 
-    override fun equals(other: Any?): Boolean = other is JsValueImpl && context == other.context && v8Value == other.v8Value
+    override fun equals(other: Any?): Boolean = other is JsValueImpl && context === other.context && v8Value == other.v8Value
 }

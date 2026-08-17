@@ -15,6 +15,14 @@ internal class JsBooleanImpl(
     jsValue: JSValue,
 ) : JsValueImpl(context, jsValue),
     JsBoolean {
+    override fun hashCode(): Int = toBoolean().hashCode()
+
+    override fun equals(other: Any?): Boolean =
+        other is JsBoolean &&
+            other !is JsObject &&
+            context === other.context &&
+            toBoolean() == other.toBoolean()
+
     override fun toBoolean(): Boolean = jsValue.toBool()
 }
 

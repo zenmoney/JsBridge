@@ -8,4 +8,8 @@ internal open class JsNullImpl(
     context: JsContext,
     jsValue: JSValue,
 ) : JsValueImpl(context, jsValue),
-    JsNull
+    JsNull {
+    override fun equals(other: Any?): Boolean = other is JsNull && context === other.context
+
+    override fun hashCode(): Int = 0
+}

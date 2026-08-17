@@ -30,7 +30,11 @@ internal class JsNumberImpl :
 
     override fun hashCode(): Int = toNumber().hashCode()
 
-    override fun equals(other: Any?): Boolean = other is JsNumberImpl && toNumber() == other.toNumber()
+    override fun equals(other: Any?): Boolean =
+        other is JsNumber &&
+            other !is JsObject &&
+            context === other.context &&
+            toNumber() == other.toNumber()
 
     override fun toNumber(): Number =
         (((v8Value as? V8ValueNumber<*>)?.value ?: (v8Value as V8ValueBigNumber<*>).value) as Number).toDouble()

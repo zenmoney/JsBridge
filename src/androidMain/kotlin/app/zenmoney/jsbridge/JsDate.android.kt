@@ -16,9 +16,9 @@ internal class JsDateImpl(
     JsDate {
     private val millis: Long = ((context as JsEngineContext).jsGetTime.call(v8Value, null) as Number).toLong()
 
-    override fun hashCode(): Int = millis.toInt()
+    override fun hashCode(): Int = toMillis().toInt()
 
-    override fun equals(other: Any?): Boolean = (other is JsDateImpl) && millis == other.millis
+    override fun equals(other: Any?): Boolean = other is JsDate && context === other.context && toMillis() == other.toMillis()
 
     override fun toMillis(): Long = millis
 }
