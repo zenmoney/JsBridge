@@ -7,11 +7,33 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 abstract class JsWebViewContextBaseTest : JsContextTest() {
+    @Test
+    fun rejectsDetachedUint8ArrayDuringByteCopy() {
+        val value =
+            assertIs<JsUint8Array>(
+                context.evaluateScript(
+                    """
+                    (() => {
+                        const memory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+                        const bytes = new Uint8Array(memory.buffer);
+                        memory.grow(1);
+                        return bytes;
+                    })()
+                    """.trimIndent(),
+                ),
+            )
+
+        val exception = assertFailsWith<JsException> { value.toByteArray() }
+
+        assertEquals("Cannot encode a detached Uint8Array", exception.message)
+    }
+
     @Test
     fun runWaitsForChildLaunchedDuringMicrotaskCheckpoint() =
         runTest {

@@ -1,5 +1,9 @@
 package app.zenmoney.jsbridge
 
+import app.zenmoney.jsbridge.serialization.ExpressionValueCodec
+import app.zenmoney.jsbridge.serialization.ExpressionValueTag
+import app.zenmoney.jsbridge.serialization.JsValueWire
+import app.zenmoney.jsbridge.serialization.expressionValueCoreCodecFactorySource
 import kotlin.jvm.JvmInline
 
 internal enum class JsWebViewProtocolCode(
@@ -11,6 +15,7 @@ internal enum class JsWebViewProtocolCode(
     COMMAND_CREATE_UINT8ARRAY("y+"),
 
     COMMAND_EVALUATE("e"),
+    COMMAND_DECODE_EXPRESSION("v"),
 
     COMMAND_READ_UINT8ARRAY("y?"),
 
@@ -29,31 +34,25 @@ internal enum class JsWebViewProtocolCode(
     CALLBACK_FUNCTION("f"),
     CALLBACK_PROMISE_EXECUTOR("p"),
     CALLBACK_DEALLOCATE("d"),
-
-    VALUE_NULL("0"),
-    VALUE_UNDEFINED("u"),
-    VALUE_BOOLEAN("b"),
-    VALUE_NUMBER("n"),
-    VALUE_BIGINT("i"),
-    VALUE_STRING("s"),
-    VALUE_BYTE_ARRAY("y"),
-    VALUE_HANDLE("h"),
-
-    NUMBER_NAN("nan"),
-    NUMBER_POSITIVE_INFINITY("+inf"),
-    NUMBER_NEGATIVE_INFINITY("-inf"),
-    NUMBER_NEGATIVE_ZERO("-0"),
     ;
 
     private val json: String = "\"$value\""
 
     fun toJson(): String = json
-
-    fun toTag(): Char {
-        check(value.length == 1) { "$this is not a one-character protocol code" }
-        return value[0]
-    }
 }
+
+internal enum class JsWebViewProtocolValueType {
+    NULL,
+    UNDEFINED,
+    BOOLEAN,
+    NUMBER,
+    BIGINT,
+    STRING,
+    UINT8_ARRAY,
+    HANDLE,
+}
+
+private const val JS_WEB_VIEW_HANDLE_TAG = "h"
 
 @JvmInline
 internal value class JsWebViewMessage private constructor(
@@ -73,12 +72,23 @@ internal value class JsWebViewMessage private constructor(
         fun Evaluate(script: String): JsWebViewMessage = message(JsWebViewProtocolCode.COMMAND_EVALUATE, ",${script.toJson()}")
 
         @Suppress("FunctionName")
+        fun DecodeExpression(
+            decoderHandle: Int,
+            expression: String,
+            resolvedReferenceValues: List<JsWebViewProtocolValue>,
+        ): JsWebViewMessage =
+            message(
+                JsWebViewProtocolCode.COMMAND_DECODE_EXPRESSION,
+                ",$decoderHandle,$expression,${resolvedReferenceValues.toJsonArray { it.value }}",
+            )
+
+        @Suppress("FunctionName")
         fun CreateArray(items: List<JsWebViewProtocolValue>): JsWebViewMessage =
             message(JsWebViewProtocolCode.COMMAND_CREATE_ARRAY, ",${items.toJsonArray { it.value }}")
 
         @Suppress("FunctionName")
         fun CreateUint8Array(value: ByteArray): JsWebViewMessage =
-            message(JsWebViewProtocolCode.COMMAND_CREATE_UINT8ARRAY, ",${value.toJsonArray()}")
+            message(JsWebViewProtocolCode.COMMAND_CREATE_UINT8ARRAY, ",${JsWebViewProtocolValue.Uint8Array(value).value}")
 
         @Suppress("FunctionName")
         fun ReadUint8Array(handle: Int): JsWebViewMessage = message(JsWebViewProtocolCode.COMMAND_READ_UINT8ARRAY, ",$handle")
@@ -224,112 +234,66 @@ internal value class JsWebViewProtocolHandle private constructor(
 internal value class JsWebViewProtocolValue private constructor(
     val value: String,
 ) {
-    val type: JsWebViewProtocolCode
-        get() {
-            check(value.length >= 5 && value[0] == '[' && value[1] == '"' && value[3] == '"') {
-                "Invalid JsWebView protocol value"
-            }
-            return jsWebViewProtocolValueCode(value[2])
-        }
+    val type: JsWebViewProtocolValueType
+        get() = value.readProtocolValueType()
 
-    fun decodeBoolean(): Boolean =
-        decode(JsWebViewProtocolCode.VALUE_BOOLEAN) {
-            it.expect(',')
-            it.readProtocolBoolean()
-        }
+    fun decodeBoolean(): Boolean = ExpressionValueCodec.decodeBoolean(JsValueWire(value))
 
-    fun decodeNumber(): Double =
-        decode(JsWebViewProtocolCode.VALUE_NUMBER) {
-            it.expect(',')
-            it.readProtocolNumber()
-        }
+    fun decodeNumber(): Double = ExpressionValueCodec.decodeNumber(JsValueWire(value))
 
-    fun decodeBigInt(): Double =
-        decode(JsWebViewProtocolCode.VALUE_BIGINT) {
-            it.expect(',')
-            it.readString().toDouble()
-        }
+    fun decodeBigIntString(): String = ExpressionValueCodec.decodeBigIntString(JsValueWire(value))
 
-    fun decodeString(): String =
-        decode(JsWebViewProtocolCode.VALUE_STRING) {
-            it.expect(',')
-            it.readString()
-        }
+    fun decodeBigInt(): Double = decodeBigIntString().toDouble()
 
-    fun decodeByteArray(): ByteArray =
-        decode(JsWebViewProtocolCode.VALUE_BYTE_ARRAY) {
-            it.expect(',')
-            it.readByteArray()
-        }
+    fun decodeString(): String = ExpressionValueCodec.decodeString(JsValueWire(value))
 
-    fun decodeHandle(): JsWebViewProtocolHandle =
-        decode(JsWebViewProtocolCode.VALUE_HANDLE) {
-            it.expect(',')
-            JsWebViewProtocolHandle.decode(it.readLong())
-        }
+    fun decodeUint8Array(): ByteArray = ExpressionValueCodec.decodeUint8Array(JsValueWire(value))
 
-    private inline fun <T> decode(
-        expectedType: JsWebViewProtocolCode,
-        block: (JsWebViewProtocolReader) -> T,
-    ): T {
-        val reader = valueReader()
-        val actualType = reader.readValueType()
-        check(actualType == expectedType) { "Expected $expectedType, got $actualType" }
-        val result = block(reader)
-        reader.expect(']')
-        reader.expectEnd()
-        return result
+    fun decodeHandle(): JsWebViewProtocolHandle {
+        var index = ExpressionValueCodec.tagPayloadStart(value, 0, JS_WEB_VIEW_HANDLE_TAG)
+        index = value.skipJsonWhitespace(index)
+        check(index >= value.length || value[index] != '-') { "JsWebView handle must be non-negative" }
+        val numberStart = index
+        var encoded = 0L
+        while (index < value.length && value[index] in '0'..'9') {
+            val digit = value[index] - '0'
+            check(encoded <= (Long.MAX_VALUE - digit) / 10) { "JsWebView handle is out of range" }
+            encoded = encoded * 10 + digit
+            index++
+        }
+        check(index > numberStart) { "Expected integer at $numberStart" }
+        check(index == numberStart + 1 || value[numberStart] != '0') { "JsWebView handle has a leading zero" }
+        value.expectJsonEnd(ExpressionValueCodec.expectTaggedValueEnd(value, index))
+        return JsWebViewProtocolHandle.decode(encoded)
     }
 
-    private fun valueReader(): JsWebViewProtocolReader =
-        JsWebViewProtocolReader(value).also {
-            it.expect('[')
-        }
-
     companion object {
-        @Suppress("FunctionName")
-        fun Null(): JsWebViewProtocolValue = JsWebViewProtocolValue("[${JsWebViewProtocolCode.VALUE_NULL.toJson()}]")
+        private val nullValue = JsWebViewProtocolValue(ExpressionValueCodec.encodeNull().value)
+        private val undefinedValue = JsWebViewProtocolValue(ExpressionValueCodec.encodeUndefined().value)
+        private val falseValue = JsWebViewProtocolValue(ExpressionValueCodec.encodeBoolean(false).value)
+        private val trueValue = JsWebViewProtocolValue(ExpressionValueCodec.encodeBoolean(true).value)
 
         @Suppress("FunctionName")
-        fun Undefined(): JsWebViewProtocolValue = JsWebViewProtocolValue("[${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}]")
+        fun Null(): JsWebViewProtocolValue = nullValue
 
         @Suppress("FunctionName")
-        fun Boolean(value: Boolean): JsWebViewProtocolValue =
-            JsWebViewProtocolValue("[${JsWebViewProtocolCode.VALUE_BOOLEAN.toJson()},${if (value) 1 else 0}]")
+        fun Undefined(): JsWebViewProtocolValue = undefinedValue
 
         @Suppress("FunctionName")
-        fun Number(value: Number): JsWebViewProtocolValue {
-            val number = value.toDouble()
-            val encodedNumber =
-                when {
-                    number.isNaN() -> JsWebViewProtocolCode.NUMBER_NAN.toJson()
-                    number == Double.POSITIVE_INFINITY -> JsWebViewProtocolCode.NUMBER_POSITIVE_INFINITY.toJson()
-                    number == Double.NEGATIVE_INFINITY -> JsWebViewProtocolCode.NUMBER_NEGATIVE_INFINITY.toJson()
-                    number.toBits() == (-0.0).toBits() -> JsWebViewProtocolCode.NUMBER_NEGATIVE_ZERO.toJson()
-                    else -> number.toString()
-                }
-            return JsWebViewProtocolValue("[${JsWebViewProtocolCode.VALUE_NUMBER.toJson()},$encodedNumber]")
-        }
+        fun Boolean(value: Boolean): JsWebViewProtocolValue = if (value) trueValue else falseValue
 
         @Suppress("FunctionName")
-        fun BigInt(value: String): JsWebViewProtocolValue =
-            JsWebViewProtocolValue("[${JsWebViewProtocolCode.VALUE_BIGINT.toJson()},${value.toJson()}]")
+        fun Number(value: Number): JsWebViewProtocolValue = JsWebViewProtocolValue(ExpressionValueCodec.encodeNumber(value).value)
 
         @Suppress("FunctionName")
-        fun String(value: String): JsWebViewProtocolValue =
-            JsWebViewProtocolValue("[${JsWebViewProtocolCode.VALUE_STRING.toJson()},${value.toJson()}]")
+        fun BigInt(value: String): JsWebViewProtocolValue = JsWebViewProtocolValue(ExpressionValueCodec.encodeBigInt(value).value)
 
         @Suppress("FunctionName")
-        fun ByteArray(value: ByteArray): JsWebViewProtocolValue =
-            JsWebViewProtocolValue(
-                value.joinToString(
-                    separator = ",",
-                    prefix = "[${JsWebViewProtocolCode.VALUE_BYTE_ARRAY.toJson()},[",
-                    postfix = "]]",
-                ) {
-                    (it.toInt() and 0xff).toString()
-                },
-            )
+        fun String(value: String): JsWebViewProtocolValue = JsWebViewProtocolValue(ExpressionValueCodec.encodeString(value).value)
+
+        @Suppress("FunctionName")
+        fun Uint8Array(value: ByteArray): JsWebViewProtocolValue =
+            JsWebViewProtocolValue(ExpressionValueCodec.encodeUint8Array(value).value)
 
         @Suppress("FunctionName")
         fun Handle(
@@ -337,12 +301,27 @@ internal value class JsWebViewProtocolValue private constructor(
             type: JsWebViewProtocolHandleType,
         ): JsWebViewProtocolValue =
             JsWebViewProtocolValue(
-                "[${JsWebViewProtocolCode.VALUE_HANDLE.toJson()},${JsWebViewProtocolHandle.encode(handle, type).encoded}]",
+                "[${JS_WEB_VIEW_HANDLE_TAG.toJson()},${JsWebViewProtocolHandle.encode(handle, type).encoded}]",
             )
 
         internal fun fromEncoded(value: String): JsWebViewProtocolValue = JsWebViewProtocolValue(value)
     }
 }
+
+private fun String.readProtocolValueType(): JsWebViewProtocolValueType =
+    if (ExpressionValueCodec.hasTag(this, 0, JS_WEB_VIEW_HANDLE_TAG)) {
+        JsWebViewProtocolValueType.HANDLE
+    } else {
+        when (ExpressionValueCodec.valueTypeOf(this)) {
+            ExpressionValueCodec.ValueType.NULL -> JsWebViewProtocolValueType.NULL
+            ExpressionValueCodec.ValueType.UNDEFINED -> JsWebViewProtocolValueType.UNDEFINED
+            ExpressionValueCodec.ValueType.BOOLEAN -> JsWebViewProtocolValueType.BOOLEAN
+            ExpressionValueCodec.ValueType.NUMBER -> JsWebViewProtocolValueType.NUMBER
+            ExpressionValueCodec.ValueType.BIGINT -> JsWebViewProtocolValueType.BIGINT
+            ExpressionValueCodec.ValueType.STRING -> JsWebViewProtocolValueType.STRING
+            ExpressionValueCodec.ValueType.UINT8_ARRAY -> JsWebViewProtocolValueType.UINT8_ARRAY
+        }
+    }
 
 internal class JsWebViewMessageHandler(
     private val listener: Listener,
@@ -375,339 +354,193 @@ internal class JsWebViewMessageHandler(
     }
 
     fun handle(message: String) {
-        val reader = JsWebViewProtocolReader(message)
-        reader.expect('[')
-        val type = reader.readTag()
-        reader.expect(',')
+        var index = message.expectJsonChar(0, '[')
+        val decodedType = message.decodePackedProtocolCallbackType(index)
+        val type = decodedType.decodedProtocolCode()
+        index = message.expectJsonChar(decodedType.decodedProtocolIndex(), ',')
+
         when (type) {
-            JsWebViewProtocolCode.CALLBACK_RESULT.toTag() -> readSuccessMessage(reader)
-            JsWebViewProtocolCode.CALLBACK_ERROR.toTag() -> readFailureMessage(reader)
-            JsWebViewProtocolCode.CALLBACK_FUNCTION.toTag() -> readFunctionMessage(reader)
-            JsWebViewProtocolCode.CALLBACK_PROMISE_EXECUTOR.toTag() -> readPromiseExecutorMessage(reader)
-            JsWebViewProtocolCode.CALLBACK_DEALLOCATE.toTag() -> readDeallocateMessage(reader)
-            else -> throw IllegalArgumentException("Unknown JsWebView message kind: $type")
+            JsWebViewProtocolCode.CALLBACK_RESULT,
+            JsWebViewProtocolCode.CALLBACK_ERROR,
+            -> {
+                val request = message.decodePackedProtocolInt(index)
+                val requestId = request.decodedProtocolInt()
+                index = message.expectJsonChar(request.decodedProtocolIndex(), ',')
+                val valueStart = message.skipJsonWhitespace(index)
+                index = message.decodeProtocolValueEnd(valueStart)
+                val value = JsWebViewProtocolValue.fromEncoded(message.substring(valueStart, index))
+                message.expectProtocolMessageEnd(index)
+                if (type == JsWebViewProtocolCode.CALLBACK_RESULT) {
+                    listener.onSuccess(requestId, value)
+                } else {
+                    listener.onFailure(requestId, value)
+                }
+            }
+
+            JsWebViewProtocolCode.CALLBACK_FUNCTION -> {
+                val jsCallback = message.decodePackedProtocolInt(index)
+                val jsCallbackId = jsCallback.decodedProtocolInt()
+                index = message.expectJsonChar(jsCallback.decodedProtocolIndex(), ',')
+                val callback = message.decodePackedProtocolInt(index)
+                val callbackId = callback.decodedProtocolInt()
+                index = message.expectJsonChar(callback.decodedProtocolIndex(), ',')
+
+                val thisStart = message.skipJsonWhitespace(index)
+                index = message.decodeProtocolValueEnd(thisStart)
+                val thiz = JsWebViewProtocolValue.fromEncoded(message.substring(thisStart, index))
+                index = message.expectJsonChar(index, ',')
+
+                index = message.expectJsonChar(index, '[')
+                val args: List<JsWebViewProtocolValue>
+                if (message.peekJsonChar(index, ']')) {
+                    index = message.expectJsonChar(index, ']')
+                    args = emptyList()
+                } else {
+                    val decodedArgs = arrayListOf<JsWebViewProtocolValue>()
+                    while (true) {
+                        val valueStart = message.skipJsonWhitespace(index)
+                        index = message.decodeProtocolValueEnd(valueStart)
+                        decodedArgs.add(JsWebViewProtocolValue.fromEncoded(message.substring(valueStart, index)))
+                        if (message.peekJsonChar(index, ']')) {
+                            index = message.expectJsonChar(index, ']')
+                            break
+                        }
+                        index = message.expectJsonChar(index, ',')
+                    }
+                    args = decodedArgs
+                }
+                message.expectProtocolMessageEnd(index)
+                listener.onFunction(jsCallbackId, callbackId, thiz, args)
+            }
+
+            JsWebViewProtocolCode.CALLBACK_PROMISE_EXECUTOR -> {
+                val executorCallback = message.decodePackedProtocolInt(index)
+                val executorCallbackId = executorCallback.decodedProtocolInt()
+                index = message.expectJsonChar(executorCallback.decodedProtocolIndex(), ',')
+
+                val resolveStart = message.skipJsonWhitespace(index)
+                index = message.decodeProtocolValueEnd(resolveStart)
+                val resolve = JsWebViewProtocolValue.fromEncoded(message.substring(resolveStart, index))
+                index = message.expectJsonChar(index, ',')
+
+                val rejectStart = message.skipJsonWhitespace(index)
+                index = message.decodeProtocolValueEnd(rejectStart)
+                val reject = JsWebViewProtocolValue.fromEncoded(message.substring(rejectStart, index))
+                message.expectProtocolMessageEnd(index)
+                listener.onPromiseExecutor(executorCallbackId, resolve, reject)
+            }
+
+            JsWebViewProtocolCode.CALLBACK_DEALLOCATE -> {
+                val handle = message.decodePackedProtocolInt(index)
+                index = handle.decodedProtocolIndex()
+                message.expectProtocolMessageEnd(index)
+                listener.onDeallocate(handle.decodedProtocolInt())
+            }
+
+            else -> {
+                error("Expected JsWebView callback code")
+            }
         }
-        reader.expect(']')
-        reader.expectEnd()
-    }
-
-    private fun readSuccessMessage(reader: JsWebViewProtocolReader) {
-        val requestId = reader.readInt()
-        reader.expect(',')
-        listener.onSuccess(requestId, reader.readProtocolValue())
-    }
-
-    private fun readFailureMessage(reader: JsWebViewProtocolReader) {
-        val requestId = reader.readInt()
-        reader.expect(',')
-        listener.onFailure(requestId, reader.readProtocolValue())
-    }
-
-    private fun readFunctionMessage(reader: JsWebViewProtocolReader) {
-        val jsCallbackId = reader.readInt()
-        reader.expect(',')
-        val callbackId = reader.readInt()
-        reader.expect(',')
-        val thiz = reader.readProtocolValue()
-        reader.expect(',')
-        val args = reader.readProtocolValueList()
-        listener.onFunction(jsCallbackId, callbackId, thiz, args)
-    }
-
-    private fun readPromiseExecutorMessage(reader: JsWebViewProtocolReader) {
-        val executorCallbackId = reader.readInt()
-        reader.expect(',')
-        val resolve = reader.readProtocolValue()
-        reader.expect(',')
-        val reject = reader.readProtocolValue()
-        listener.onPromiseExecutor(executorCallbackId, resolve, reject)
-    }
-
-    private fun readDeallocateMessage(reader: JsWebViewProtocolReader) {
-        listener.onDeallocate(reader.readInt())
     }
 }
 
-private class JsWebViewProtocolReader(
-    private val source: String,
-) {
-    private var index = 0
+// Cursor decoders pack the next source index into the upper half, avoiding an allocated Pair result.
+private fun String.decodePackedProtocolCallbackType(startIndex: Int): Long {
+    val index = skipJsonWhitespace(startIndex)
+    check(index + 2 < length && this[index] == '"' && this[index + 2] == '"') {
+        "Expected JsWebView callback tag at $index"
+    }
+    val type =
+        when (this[index + 1]) {
+            JsWebViewProtocolCode.CALLBACK_RESULT.value[0] -> JsWebViewProtocolCode.CALLBACK_RESULT
+            JsWebViewProtocolCode.CALLBACK_ERROR.value[0] -> JsWebViewProtocolCode.CALLBACK_ERROR
+            JsWebViewProtocolCode.CALLBACK_FUNCTION.value[0] -> JsWebViewProtocolCode.CALLBACK_FUNCTION
+            JsWebViewProtocolCode.CALLBACK_PROMISE_EXECUTOR.value[0] -> JsWebViewProtocolCode.CALLBACK_PROMISE_EXECUTOR
+            JsWebViewProtocolCode.CALLBACK_DEALLOCATE.value[0] -> JsWebViewProtocolCode.CALLBACK_DEALLOCATE
+            else -> throw IllegalArgumentException("Unknown JsWebView callback kind at ${index + 1}")
+        }
+    return ((index + 3).toLong() shl 32) or type.ordinal.toLong()
+}
 
-    fun expect(char: Char) {
-        skipWhitespace()
-        check(index < source.length && source[index] == char) { "Expected '$char' at $index" }
+private fun String.decodeProtocolValueEnd(startIndex: Int): Int {
+    if (!ExpressionValueCodec.hasTag(this, startIndex, JS_WEB_VIEW_HANDLE_TAG)) {
+        return ExpressionValueCodec.skipValue(this, startIndex)
+    }
+    var index = ExpressionValueCodec.tagPayloadStart(this, startIndex, JS_WEB_VIEW_HANDLE_TAG)
+    index = skipProtocolHandle(index)
+    return ExpressionValueCodec.expectTaggedValueEnd(this, index)
+}
+
+private fun Long.decodedProtocolCode(): JsWebViewProtocolCode = JsWebViewProtocolCode.entries[toInt()]
+
+private fun String.decodePackedProtocolInt(startIndex: Int): Long {
+    var index = skipJsonWhitespace(startIndex)
+    val isNegative = index < length && this[index] == '-'
+    if (isNegative) index++
+    val numberStart = index
+    val limit = if (isNegative) -(Int.MIN_VALUE.toLong()) else Int.MAX_VALUE.toLong()
+    var value = 0L
+    while (index < length && this[index] in '0'..'9') {
+        val digit = this[index] - '0'
+        check(value <= (limit - digit) / 10) { "Integer is out of range at $numberStart" }
+        value = value * 10 + digit
         index++
     }
-
-    fun expectEnd() {
-        skipWhitespace()
-        check(index == source.length) { "Unexpected trailing data at $index" }
-    }
-
-    fun peek(char: Char): Boolean {
-        skipWhitespace()
-        return index < source.length && source[index] == char
-    }
-
-    fun readLong(): Long {
-        skipWhitespace()
-        val isNegative = index < source.length && source[index] == '-'
-        if (isNegative) {
-            index++
-        }
-        val start = index
-        var value = 0L
-        while (index < source.length) {
-            val char = source[index]
-            if (char !in '0'..'9') break
-            value = value * 10 + (char - '0')
-            index++
-        }
-        check(index > start) { "Expected integer at $start" }
-        return if (isNegative) -value else value
-    }
-
-    fun readInt(): Int {
-        val value = readLong()
-        check(value in Int.MIN_VALUE..Int.MAX_VALUE) { "Integer is out of range: $value" }
-        return value.toInt()
-    }
-
-    fun readDouble(): Double {
-        skipWhitespace()
-        val start = index
-        while (index < source.length && source[index] !in " \n\r\t,]}") {
-            index++
-        }
-        return source.substring(start, index).toDouble()
-    }
-
-    fun readProtocolBoolean(): Boolean =
-        when (val value = readInt()) {
-            0 -> false
-            1 -> true
-            else -> throw IllegalArgumentException("Unknown JsWebView boolean value: $value")
-        }
-
-    fun readProtocolNumber(): Double {
-        if (peek('"')) {
-            return when (val value = readString()) {
-                JsWebViewProtocolCode.NUMBER_NAN.value -> Double.NaN
-                JsWebViewProtocolCode.NUMBER_POSITIVE_INFINITY.value -> Double.POSITIVE_INFINITY
-                JsWebViewProtocolCode.NUMBER_NEGATIVE_INFINITY.value -> Double.NEGATIVE_INFINITY
-                JsWebViewProtocolCode.NUMBER_NEGATIVE_ZERO.value -> -0.0
-                else -> throw IllegalArgumentException("Unknown JsWebView number value: $value")
-            }
-        }
-        return readDouble().also {
-            check(it.isFinite()) { "Non-finite JsWebView number must use a protocol code" }
-        }
-    }
-
-    fun readByteArray(): ByteArray {
-        expect('[')
-        if (peek(']')) {
-            expect(']')
-            return ByteArray(0)
-        }
-        var bytes = ByteArray(16)
-        var size = 0
-        while (true) {
-            if (size == bytes.size) {
-                bytes = bytes.copyOf(bytes.size * 2)
-            }
-            bytes[size++] = readInt().toByte()
-            if (peek(']')) {
-                expect(']')
-                return bytes.copyOf(size)
-            }
-            expect(',')
-        }
-    }
-
-    fun readProtocolValue(): JsWebViewProtocolValue {
-        skipWhitespace()
-        val start = index
-        expect('[')
-        when (readValueType()) {
-            JsWebViewProtocolCode.VALUE_NULL,
-            JsWebViewProtocolCode.VALUE_UNDEFINED,
-            -> {
-                Unit
-            }
-
-            JsWebViewProtocolCode.VALUE_BOOLEAN -> {
-                expect(',')
-                readProtocolBoolean()
-            }
-
-            JsWebViewProtocolCode.VALUE_NUMBER -> {
-                expect(',')
-                readProtocolNumber()
-            }
-
-            JsWebViewProtocolCode.VALUE_BIGINT -> {
-                expect(',')
-                readString()
-            }
-
-            JsWebViewProtocolCode.VALUE_STRING -> {
-                expect(',')
-                readString()
-            }
-
-            JsWebViewProtocolCode.VALUE_BYTE_ARRAY -> {
-                expect(',')
-                readByteArray()
-            }
-
-            JsWebViewProtocolCode.VALUE_HANDLE -> {
-                expect(',')
-                JsWebViewProtocolHandle.decode(readLong())
-            }
-
-            else -> {
-                error("Expected JsWebView value code")
-            }
-        }
-        expect(']')
-        return JsWebViewProtocolValue.fromEncoded(source.substring(start, index))
-    }
-
-    fun readProtocolValueList(): List<JsWebViewProtocolValue> {
-        expect('[')
-        if (peek(']')) {
-            expect(']')
-            return emptyList()
-        }
-        val values = arrayListOf<JsWebViewProtocolValue>()
-        while (true) {
-            values.add(readProtocolValue())
-            if (peek(']')) {
-                expect(']')
-                return values
-            }
-            expect(',')
-        }
-    }
-
-    fun readString(): String {
-        expect('"')
-        val contentStart = index
-        while (true) {
-            check(index < source.length) { "Unterminated string at $contentStart" }
-            when (source[index++]) {
-                '"' -> return source.substring(contentStart, index - 1)
-                '\\' -> break
-            }
-        }
-
-        index = contentStart
-        val result = StringBuilder()
-        while (true) {
-            check(index < source.length) { "Unterminated string at $contentStart" }
-            when (val char = source[index++]) {
-                '"' -> {
-                    return result.toString()
-                }
-
-                '\\' -> {
-                    check(index < source.length) { "Unterminated escape sequence at $index" }
-                    result.append(readEscapedChar())
-                }
-
-                else -> {
-                    result.append(char)
-                }
-            }
-        }
-    }
-
-    fun readTag(): Char {
-        expect('"')
-        check(index + 1 < source.length && source[index + 1] == '"') { "Expected one-character tag at $index" }
-        val tag = source[index]
-        index += 2
-        return tag
-    }
-
-    fun readValueType(): JsWebViewProtocolCode = jsWebViewProtocolValueCode(readTag())
-
-    private fun readEscapedChar(): Char =
-        when (val escaped = source[index++]) {
-            '"' -> {
-                '"'
-            }
-
-            '\\' -> {
-                '\\'
-            }
-
-            '/' -> {
-                '/'
-            }
-
-            'b' -> {
-                '\b'
-            }
-
-            'n' -> {
-                '\n'
-            }
-
-            'r' -> {
-                '\r'
-            }
-
-            't' -> {
-                '\t'
-            }
-
-            'f' -> {
-                '\u000c'
-            }
-
-            'u' -> {
-                check(index + 4 <= source.length) { "Invalid unicode escape at $index" }
-                source.substring(index, index + 4).toInt(16).toChar().also {
-                    index += 4
-                }
-            }
-
-            else -> {
-                escaped
-            }
-        }
-
-    private fun skipWhitespace() {
-        while (index < source.length && source[index] in " \n\r\t") {
-            index++
-        }
-    }
+    check(index > numberStart) { "Expected integer at $numberStart" }
+    check(index == numberStart + 1 || this[numberStart] != '0') { "Integer has a leading zero at $numberStart" }
+    if (isNegative) value = -value
+    return (index.toLong() shl 32) or (value and 0xffffffffL)
 }
 
-private fun jsWebViewProtocolValueCode(tag: Char): JsWebViewProtocolCode =
-    when (tag) {
-        '0' -> JsWebViewProtocolCode.VALUE_NULL
-        'u' -> JsWebViewProtocolCode.VALUE_UNDEFINED
-        'b' -> JsWebViewProtocolCode.VALUE_BOOLEAN
-        'n' -> JsWebViewProtocolCode.VALUE_NUMBER
-        'i' -> JsWebViewProtocolCode.VALUE_BIGINT
-        's' -> JsWebViewProtocolCode.VALUE_STRING
-        'y' -> JsWebViewProtocolCode.VALUE_BYTE_ARRAY
-        'h' -> JsWebViewProtocolCode.VALUE_HANDLE
-        else -> throw IllegalArgumentException("Unknown JsWebView value kind: $tag")
+private fun Long.decodedProtocolIndex(): Int = (this ushr 32).toInt()
+
+private fun Long.decodedProtocolInt(): Int = toInt()
+
+private fun String.skipProtocolHandle(startIndex: Int): Int {
+    var index = skipJsonWhitespace(startIndex)
+    check(index >= length || this[index] != '-') { "JsWebView handle must be non-negative" }
+    val numberStart = index
+    var value = 0L
+    while (index < length && this[index] in '0'..'9') {
+        val digit = this[index] - '0'
+        check(value <= (Long.MAX_VALUE - digit) / 10) { "JsWebView handle is out of range at $numberStart" }
+        value = value * 10 + digit
+        index++
     }
+    check(index > numberStart) { "Expected integer at $numberStart" }
+    check(index == numberStart + 1 || this[numberStart] != '0') { "JsWebView handle has a leading zero at $numberStart" }
+    JsWebViewProtocolHandle.decode(value)
+    return index
+}
+
+private fun String.expectProtocolMessageEnd(startIndex: Int) {
+    expectJsonEnd(expectJsonChar(startIndex, ']'))
+}
 
 internal const val JS_WEB_VIEW_BRIDGE_OBJECT = "__appZenmoneyJsBridge"
 internal const val JS_WEB_VIEW_ANDROID_INTERFACE = "__appZenmoneyJsBridgeNative"
 internal const val JS_WEB_VIEW_IOS_HANDLER = "appZenmoneyJsBridge"
+
+private val jsWebViewExpressionValueCodecTags =
+    listOf(
+        ExpressionValueTag.NULL,
+        ExpressionValueTag.UNDEFINED,
+        ExpressionValueTag.BOOLEAN,
+        ExpressionValueTag.NUMBER,
+        ExpressionValueTag.BIGINT,
+        ExpressionValueTag.STRING,
+        ExpressionValueTag.UINT8_ARRAY,
+    )
 
 internal val jsWebViewRuntimeScript: String =
     """
     (function () {
         if (window.$JS_WEB_VIEW_BRIDGE_OBJECT) return;
 
+        const coreCodec = ($expressionValueCoreCodecFactorySource)({
+            enabledTags: [${jsWebViewExpressionValueCodecTags.joinToString(",") { it.toJson() }}],
+            maxGraphId: 2147483647,
+        });
         const objectByHandle = new Map();
         const handleByObject = new WeakMap();
         const refCountByHandle = new Map();
@@ -796,43 +629,26 @@ internal val jsWebViewRuntimeScript: String =
         }
 
         function decode(arg) {
-            switch (arg[0]) {
-                case ${JsWebViewProtocolCode.VALUE_NULL.toJson()}: return null;
-                case ${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}: return undefined;
-                case ${JsWebViewProtocolCode.VALUE_BOOLEAN.toJson()}:
-                    if (arg[1] === 0) return false;
-                    if (arg[1] === 1) return true;
-                    throw new Error("Unknown JsWebView boolean " + arg[1]);
-                case ${JsWebViewProtocolCode.VALUE_NUMBER.toJson()}: return decodeNumber(arg[1]);
-                case ${JsWebViewProtocolCode.VALUE_BIGINT.toJson()}: return typeof BigInt === "function" ? BigInt(arg[1]) : Number(arg[1]);
-                case ${JsWebViewProtocolCode.VALUE_STRING.toJson()}: return arg[1];
-                case ${JsWebViewProtocolCode.VALUE_HANDLE.toJson()}: return objectByHandle.get(decodeHandle(arg[1]));
-                default: throw new Error("Unknown JsWebView argument " + arg[0]);
+            if (Array.isArray(arg) && arg[0] === ${JS_WEB_VIEW_HANDLE_TAG.toJson()}) {
+                if (arg.length !== 2 || typeof arg[1] !== "number") {
+                    throw new Error("Invalid JsWebView handle");
+                }
+                return objectByHandle.get(decodeHandle(arg[1]));
             }
-        }
-
-        function decodeNumber(value) {
-            if (typeof value === "number") return value;
-            switch (value) {
-                case ${JsWebViewProtocolCode.NUMBER_NAN.toJson()}: return NaN;
-                case ${JsWebViewProtocolCode.NUMBER_POSITIVE_INFINITY.toJson()}: return Infinity;
-                case ${JsWebViewProtocolCode.NUMBER_NEGATIVE_INFINITY.toJson()}: return -Infinity;
-                case ${JsWebViewProtocolCode.NUMBER_NEGATIVE_ZERO.toJson()}: return -0;
-                default: throw new Error("Unknown JsWebView number " + value);
-            }
+            const graph = Array.isArray(arg) && arg[0] === ${ExpressionValueTag.UINT8_ARRAY.toJson()}
+                ? coreCodec.createGraphContext()
+                : undefined;
+            const decoded = coreCodec.decode(arg, graph);
+            if (decoded !== coreCodec.notHandled) return decoded;
+            throw new Error("Unknown JsWebView argument");
         }
 
         function encode(value) {
-            if (value === null) return '[${JsWebViewProtocolCode.VALUE_NULL.toJson()}]';
-            if (value === undefined) return '[${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}]';
-            if (value === true) return '[${JsWebViewProtocolCode.VALUE_BOOLEAN.toJson()},1]';
-            if (value === false) return '[${JsWebViewProtocolCode.VALUE_BOOLEAN.toJson()},0]';
             const valueType = typeof value;
-            if (valueType === "number") return encodeNumber(value);
-            if (valueType === "bigint") return encodeBigInt(value);
-            if (valueType === "string") return '[${JsWebViewProtocolCode.VALUE_STRING.toJson()},' + JSON.stringify(value) + ']';
-            if (valueType !== "object" && valueType !== "function") {
-                return '[${JsWebViewProtocolCode.VALUE_STRING.toJson()},' + JSON.stringify(String(value)) + ']';
+            if (value === null || valueType !== "object" && valueType !== "function") {
+                const encoded = coreCodec.encode(value);
+                if (encoded === coreCodec.notHandled) throw new Error("Unsupported JsWebView value " + valueType);
+                return coreCodec.stringifyJson(encoded);
             }
             let handle = handleByObject.get(value);
             if (handle === undefined) {
@@ -846,7 +662,7 @@ internal val jsWebViewRuntimeScript: String =
                 }
             }
             retainHandle(handle, value, true);
-            return '[${JsWebViewProtocolCode.VALUE_HANDLE.toJson()},' + encodeHandle(handle, typeOf(value)) + ']';
+            return '[${JS_WEB_VIEW_HANDLE_TAG.toJson()},' + encodeHandle(handle, typeOf(value)) + ']';
         }
 
         function typeOf(value) {
@@ -865,26 +681,6 @@ internal val jsWebViewRuntimeScript: String =
             } catch (_) {
             }
             return ${JsWebViewProtocolHandleType.OBJECT.code};
-        }
-
-        function encodeNumber(value) {
-            if (Number.isNaN(value)) {
-                return '[${JsWebViewProtocolCode.VALUE_NUMBER.toJson()},${JsWebViewProtocolCode.NUMBER_NAN.toJson()}]';
-            }
-            if (value === Infinity) {
-                return '[${JsWebViewProtocolCode.VALUE_NUMBER.toJson()},${JsWebViewProtocolCode.NUMBER_POSITIVE_INFINITY.toJson()}]';
-            }
-            if (value === -Infinity) {
-                return '[${JsWebViewProtocolCode.VALUE_NUMBER.toJson()},${JsWebViewProtocolCode.NUMBER_NEGATIVE_INFINITY.toJson()}]';
-            }
-            if (Object.is(value, -0)) {
-                return '[${JsWebViewProtocolCode.VALUE_NUMBER.toJson()},${JsWebViewProtocolCode.NUMBER_NEGATIVE_ZERO.toJson()}]';
-            }
-            return '[${JsWebViewProtocolCode.VALUE_NUMBER.toJson()},' + value + ']';
-        }
-
-        function encodeBigInt(value) {
-            return '[${JsWebViewProtocolCode.VALUE_BIGINT.toJson()},' + JSON.stringify(value.toString()) + ']';
         }
 
         function encodeAsList(values) {
@@ -917,14 +713,33 @@ internal val jsWebViewRuntimeScript: String =
                     return encode(value);
                 }
 
+                case ${JsWebViewProtocolCode.COMMAND_DECODE_EXPRESSION.toJson()}: {
+                    if (command.length !== 4 || typeof command[1] !== "number" || !Array.isArray(command[3])) {
+                        throw new Error("Invalid expression decode command");
+                    }
+                    const decoder = objectByHandle.get(command[1]);
+                    if (typeof decoder !== "function") throw new Error("Unknown expression decoder handle");
+                    return encode(decoder(command[2], command[3].map(decode), true));
+                }
+
                 case ${JsWebViewProtocolCode.COMMAND_CREATE_ARRAY.toJson()}:
                     return encode(command[1].map(decode));
 
-                case ${JsWebViewProtocolCode.COMMAND_CREATE_UINT8ARRAY.toJson()}:
-                    return encode(Uint8Array.from(command[1]));
+                case ${JsWebViewProtocolCode.COMMAND_CREATE_UINT8ARRAY.toJson()}: {
+                    if (!Array.isArray(command[1]) || command[1][0] !== ${ExpressionValueTag.UINT8_ARRAY.toJson()}) {
+                        throw new Error("Expected encoded Uint8Array");
+                    }
+                    const value = coreCodec.decode(command[1], coreCodec.createGraphContext());
+                    return encode(value);
+                }
 
-                case ${JsWebViewProtocolCode.COMMAND_READ_UINT8ARRAY.toJson()}:
-                    return '[${JsWebViewProtocolCode.VALUE_BYTE_ARRAY.toJson()},[' + objectByHandle.get(command[1]).join(",") + ']]';
+                case ${JsWebViewProtocolCode.COMMAND_READ_UINT8ARRAY.toJson()}: {
+                    const encoded = coreCodec.encode(objectByHandle.get(command[1]), coreCodec.createGraphContext());
+                    if (encoded === coreCodec.notHandled || encoded[0] !== ${ExpressionValueTag.UINT8_ARRAY.toJson()}) {
+                        throw new Error("Expected Uint8Array handle");
+                    }
+                    return coreCodec.stringifyJson(encoded);
+                }
 
                 case ${JsWebViewProtocolCode.COMMAND_CREATE_FUNCTION.toJson()}: {
                     const callbackId = command[1];
@@ -995,7 +810,7 @@ internal val jsWebViewRuntimeScript: String =
                 case ${JsWebViewProtocolCode.COMMAND_SET_OBJECT_VALUE.toJson()}: {
                     const receiver = objectByHandle.get(command[1]);
                     receiver[command[2]] = decode(command[3]);
-                    return '[${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}]';
+                    return encode(undefined);
                 }
 
                 case ${JsWebViewProtocolCode.COMMAND_CALL_FUNCTION.toJson()}: {
@@ -1013,7 +828,7 @@ internal val jsWebViewRuntimeScript: String =
 
                 case ${JsWebViewProtocolCode.COMMAND_RELEASE.toJson()}:
                     releaseHandleAndDeleteIfUnused(command[1]);
-                    return '[${JsWebViewProtocolCode.VALUE_UNDEFINED.toJson()}]';
+                    return encode(undefined);
 
                 default:
                     throw new Error("unexpected JsWebView message " + command[0]);
@@ -1062,44 +877,3 @@ internal val jsWebViewRuntimeScript: String =
     """.trimIndent()
 
 private fun <T> List<T>.toJsonArray(item: (T) -> String): String = joinToString(separator = ",", prefix = "[", postfix = "]") { item(it) }
-
-private fun ByteArray.toJsonArray(): String =
-    joinToString(separator = ",", prefix = "[", postfix = "]") {
-        (it.toInt() and 0xff).toString()
-    }
-
-internal fun String.toJson(): String =
-    buildString {
-        append('"')
-        this@toJson.forEach {
-            when (it) {
-                '\\' -> append("\\\\")
-                '"' -> append("\\\"")
-                '\n' -> append("\\n")
-                '\r' -> append("\\r")
-                '\t' -> append("\\t")
-                '\b' -> append("\\b")
-                '\u000c' -> append("\\f")
-                '\u2028', '\u2029' -> appendUnicodeEscape(it)
-                else -> appendJsonCharacter(it)
-            }
-        }
-        append('"')
-    }
-
-private fun StringBuilder.appendJsonCharacter(char: Char) {
-    if (char < ' ') {
-        appendUnicodeEscape(char)
-    } else {
-        append(char)
-    }
-}
-
-private fun StringBuilder.appendUnicodeEscape(char: Char) {
-    append("\\u")
-    repeat(4) { shift ->
-        append(HEX_DIGITS[(char.code shr (12 - shift * 4)) and 0xf])
-    }
-}
-
-private const val HEX_DIGITS = "0123456789abcdef"

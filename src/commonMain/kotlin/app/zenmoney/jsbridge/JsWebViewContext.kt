@@ -1,5 +1,6 @@
 package app.zenmoney.jsbridge
 
+import app.zenmoney.jsbridge.serialization.JsValueWire
 import co.touchlab.stately.concurrency.Lock
 import co.touchlab.stately.concurrency.withLock
 import kotlinx.coroutines.launch
@@ -405,7 +406,7 @@ class JsWebViewContext internal constructor(
             executeWebViewMessageBlocking(
                 JsWebViewMessage.ReadUint8Array(handle),
                 "readUint8Array",
-            ).decodeByteArray()
+            ).decodeUint8Array()
         } catch (e: JsWebViewThrownError) {
             throw createWebViewValue(e.error).use { createException(it) }
         }
@@ -419,6 +420,22 @@ class JsWebViewContext internal constructor(
         } catch (e: JsWebViewThrownError) {
             throw createWebViewValue(e.error).use { createException(it) }
         }
+
+    internal fun decodeExpressionValue(
+        decoder: JsFunction,
+        wire: JsValueWire,
+        resolvedReferenceValues: List<JsValue>,
+    ): JsValue {
+        require(decoder.context === this) { "Expression decoder belongs to another JsContext" }
+        return executeWebViewMessageBlockingAndDecode(
+            JsWebViewMessage.DecodeExpression(
+                decoderHandle = (decoder as JsWebViewObject).handle,
+                expression = wire.value,
+                resolvedReferenceValues = resolvedReferenceValues.map(::createWebViewProtocolValue),
+            ),
+            "decodeExpression",
+        )
+    }
 
     private fun executeWebViewMessageBlocking(
         message: JsWebViewMessage,
@@ -564,45 +581,41 @@ private fun JsWebViewContext.createWebViewProtocolValue(value: JsValue): JsWebVi
 
 private fun JsWebViewContext.createWebViewValue(value: JsWebViewProtocolValue): JsValue =
     when (value.type) {
-        JsWebViewProtocolCode.VALUE_NULL -> {
+        JsWebViewProtocolValueType.NULL -> {
             NULL
         }
 
-        JsWebViewProtocolCode.VALUE_UNDEFINED -> {
+        JsWebViewProtocolValueType.UNDEFINED -> {
             UNDEFINED
         }
 
-        JsWebViewProtocolCode.VALUE_BOOLEAN -> {
+        JsWebViewProtocolValueType.BOOLEAN -> {
             createBoolean(value.decodeBoolean())
         }
 
-        JsWebViewProtocolCode.VALUE_NUMBER -> {
+        JsWebViewProtocolValueType.NUMBER -> {
             createNumber(value.decodeNumber())
         }
 
-        JsWebViewProtocolCode.VALUE_BIGINT -> {
+        JsWebViewProtocolValueType.BIGINT -> {
             createNumber(value.decodeBigInt())
         }
 
-        JsWebViewProtocolCode.VALUE_STRING -> {
+        JsWebViewProtocolValueType.STRING -> {
             createString(value.decodeString())
         }
 
-        JsWebViewProtocolCode.VALUE_BYTE_ARRAY -> {
-            createUint8Array(value.decodeByteArray())
+        JsWebViewProtocolValueType.UINT8_ARRAY -> {
+            createUint8Array(value.decodeUint8Array())
         }
 
-        JsWebViewProtocolCode.VALUE_HANDLE -> {
+        JsWebViewProtocolValueType.HANDLE -> {
             val handle = value.decodeHandle()
             if (handle.handle == 0 && handle.type == JsWebViewProtocolHandleType.OBJECT) {
                 globalThis
             } else {
                 createWebViewObject(handle.handle, handle.type).also { registerWebViewValue(it) }
             }
-        }
-
-        else -> {
-            error("Expected JsWebView value code, got ${value.type}")
         }
     }
 

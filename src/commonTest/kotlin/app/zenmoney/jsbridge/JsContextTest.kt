@@ -443,6 +443,26 @@ abstract class JsContextTest {
     }
 
     @Test
+    fun uint8ArraySubclassUsesTheSameValueMethods() {
+        val value =
+            context.evaluateScript(
+                """
+                (() => {
+                    class Bytes extends Uint8Array {}
+                    const value = Bytes.from([1, 2, 255]);
+                    value.extra = "ignored";
+                    Object.preventExtensions(value);
+                    return value;
+                })()
+                """.trimIndent(),
+            )
+
+        assertIs<JsUint8Array>(value)
+        assertEquals(3, value.size)
+        assertContentEquals(byteArrayOf(1, 2, 255.toByte()), value.toByteArray())
+    }
+
+    @Test
     fun passesUint8ArrayToJs() {
         val arr1 = JsUint8Array(context, byteArrayOf(1, 2, 3, 127, 128.toByte(), 255.toByte()))
         context.globalThis["arr"] = arr1

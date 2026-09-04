@@ -1,5 +1,7 @@
 package app.zenmoney.jsbridge
 
+import app.zenmoney.jsbridge.serialization.ExpressionValueCodec
+import app.zenmoney.jsbridge.serialization.JsValueWire
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -13,11 +15,48 @@ import kotlin.test.assertTrue
 
 class JsWebViewContextProtocolTest {
     @Test
+    fun expressionDecoderUsesRawWebViewCommandAndExpressionEncodedReferences() {
+        val webView =
+            FakeJsWebView { script ->
+                val requestId = requestIdRegex.find(script)?.groupValues?.get(1) ?: return@FakeJsWebView
+                val result =
+                    when {
+                        script.contains("""dispatch(["e",""") -> """["h",1]"""
+                        script.contains("""dispatch(["g",""") -> """["h",8589934594]"""
+                        script.contains("""dispatch(["c",""") -> """["h",8589934595]"""
+                        script.contains("""dispatch(["v",""") -> """["h",4]"""
+                        else -> error("Unexpected script: $script")
+                    }
+                onMessage("""["r",$requestId,$result]""")
+            }
+        val context = JsWebViewContext(webView)
+
+        ExpressionValueCodec.createDecoder(context).use { decoder ->
+            context.createString("external").use { reference ->
+                decoder
+                    .decode(
+                        JsValueWire("""["o",1,{"name":"Ada","external":["x",0]}]"""),
+                        listOf(reference),
+                    ).use { assertIs<JsObject>(it) }
+            }
+        }
+
+        val decodeScript = webView.scripts.single { it.contains("""dispatch(["v",""") }
+        assertTrue(
+            decodeScript.contains(
+                """dispatch(["v",3,["o",1,{"name":"Ada","external":["x",0]}],["external"]]""",
+            ),
+        )
+        assertFalse(decodeScript.contains("JSON.parse"))
+        context.close()
+    }
+
+    @Test
     fun contextOwnsRequestIdsAndRoutesResponses() {
         val webView =
             FakeJsWebView { script ->
                 requestIdRegex.find(script)?.let {
-                    onMessage("""["r",${it.groupValues[1]},["n",7]]""")
+                    onMessage("""["r",${it.groupValues[1]},7]""")
                 }
             }
         val context = JsWebViewContext(webView)
@@ -30,6 +69,32 @@ class JsWebViewContextProtocolTest {
         assertEquals(2, webView.scripts.size)
         context.close()
         assertTrue(webView.isClosed)
+    }
+
+    @Test
+    fun decodesBigIntAsOrdinaryNumberAtNativeBoundary() {
+        val webView =
+            FakeJsWebView { script ->
+                val requestId = requestIdRegex.find(script)?.groupValues?.get(1) ?: return@FakeJsWebView
+                val result =
+                    when {
+                        script.contains("""dispatch(["e",""") -> """["i","9007199254740993"]"""
+                        script.contains("""dispatch(["a",""") -> """["h",4294967297]"""
+                        else -> error("Unexpected script: $script")
+                    }
+                onMessage("""["r",$requestId,$result]""")
+            }
+        val context = JsWebViewContext(webView)
+
+        context.evaluateScript("9007199254740993n").use { value ->
+            assertEquals(9007199254740992.0, assertIs<JsNumber>(value).toNumber())
+            context.createArray(listOf(value)).close()
+        }
+
+        val createArrayScript = webView.scripts.single { it.contains("""dispatch(["a",""") }
+        assertTrue(createArrayScript.contains("""dispatch(["a",[9.007199254740992E15]"""))
+        assertFalse(createArrayScript.contains("""["i"""))
+        context.close()
     }
 
     @Test
@@ -74,7 +139,7 @@ class JsWebViewContextProtocolTest {
                 val result =
                     when {
                         script.contains("""["y+",""") -> """["h",38654705668]"""
-                        script.contains("""["y?",""") -> """["y",[0,128,255]]"""
+                        script.contains("""["y?",""") -> """["ui8",1,"AID/"]"""
                         script.contains("""["r",""") -> """["u"]"""
                         else -> error("Unexpected script: $script")
                     }
