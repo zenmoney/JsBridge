@@ -1,5 +1,6 @@
 package app.zenmoney.jsbridge
 
+import androidx.collection.intIntMapOf
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -184,12 +185,19 @@ class JsWebViewProtocolTest {
     }
 
     @Test
-    fun encodesFireAndForgetCommand() {
-        val command = JsWebViewMessage.Release(7)
+    fun encodesRefCountBatchIncludingZeroChanges() {
+        val script = JsWebViewMessage.UpdateRefCounts(intIntMapOf(7, 1, 8, -1, 9, 0)).toScript()
+        val changes =
+            script
+                .removeSurrounding("""__appZenmoneyJsBridge.dispatch(["r*",[""", "]]);")
+                .split(',')
+                .map(String::toInt)
+                .chunked(2)
+                .sortedBy { it[0] }
 
         assertEquals(
-            """__appZenmoneyJsBridge.dispatch(["r",7]);""",
-            command.toScript(),
+            listOf(listOf(7, 1), listOf(8, -1), listOf(9, 0)),
+            changes,
         )
     }
 

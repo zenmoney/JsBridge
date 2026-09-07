@@ -1,5 +1,6 @@
 package app.zenmoney.jsbridge
 
+import androidx.collection.IntIntMap
 import app.zenmoney.jsbridge.serialization.ExpressionValueCodec
 import app.zenmoney.jsbridge.serialization.ExpressionValueTag
 import app.zenmoney.jsbridge.serialization.JsValueWire
@@ -24,7 +25,7 @@ internal enum class JsWebViewProtocolCode(
 
     COMMAND_CALL_FUNCTION("c"),
     COMMAND_CONSTRUCT("n"),
-    COMMAND_RELEASE("r"),
+    COMMAND_UPDATE_REF_COUNTS("r*"),
 
     COMMAND_COMPLETE_NATIVE_CALLBACK("+"),
     COMMAND_FAIL_NATIVE_CALLBACK("-"),
@@ -58,9 +59,46 @@ private const val JS_WEB_VIEW_HANDLE_TAG = "h"
 internal value class JsWebViewMessage private constructor(
     val value: String,
 ) {
-    fun toScript(requestId: Int): String = "$JS_WEB_VIEW_BRIDGE_OBJECT.dispatch($value,$requestId);"
+    fun toScript(
+        requestId: Int,
+        before: JsWebViewMessage? = null,
+    ): String = buildScript(requestId, true, before)
 
-    fun toScript(): String = "$JS_WEB_VIEW_BRIDGE_OBJECT.dispatch($value);"
+    fun toScript(before: JsWebViewMessage? = null): String = buildScript(0, false, before)
+
+    private fun buildScript(
+        requestId: Int,
+        hasRequestId: Boolean,
+        before: JsWebViewMessage?,
+    ): String =
+        buildString {
+            if (before != null) {
+                append(JS_WEB_VIEW_BRIDGE_OBJECT)
+                append(".dispatch(")
+                append(before.value)
+                append(");")
+            }
+            append(JS_WEB_VIEW_BRIDGE_OBJECT)
+            append(".dispatch(")
+            append(value)
+            if (hasRequestId) {
+                append(',')
+                append(requestId)
+            }
+            append(");")
+        }
+
+    fun forEachRefCountChange(block: (handle: Int, change: Int) -> Unit) {
+        var index = value.indexOf('[', 1) + 1
+        while (value[index] != ']') {
+            val handle = value.decodePackedProtocolInt(index)
+            index = value.expectJsonChar(handle.decodedProtocolIndex(), ',')
+            val change = value.decodePackedProtocolInt(index)
+            block(handle.decodedProtocolInt(), change.decodedProtocolInt())
+            index = change.decodedProtocolIndex()
+            if (value[index] == ',') index++
+        }
+    }
 
     companion object {
         private fun message(
@@ -148,7 +186,23 @@ internal value class JsWebViewMessage private constructor(
             )
 
         @Suppress("FunctionName")
-        fun Release(handle: Int): JsWebViewMessage = message(JsWebViewProtocolCode.COMMAND_RELEASE, ",$handle")
+        fun UpdateRefCounts(changes: IntIntMap): JsWebViewMessage =
+            JsWebViewMessage(
+                buildString {
+                    append('[')
+                    append(JsWebViewProtocolCode.COMMAND_UPDATE_REF_COUNTS.toJson())
+                    append(",[")
+                    var first = true
+                    changes.forEach { handle, change ->
+                        if (!first) append(',')
+                        first = false
+                        append(handle)
+                        append(',')
+                        append(change)
+                    }
+                    append("]]")
+                },
+            )
 
         @Suppress("FunctionName")
         fun CompleteNativeCallback(
@@ -543,8 +597,13 @@ internal val jsWebViewRuntimeScript: String =
         });
         const objectByHandle = new Map();
         const handleByObject = new WeakMap();
+        // Native wrappers share one reference; callbacks add temporary references to the same count.
         const refCountByHandle = new Map();
         const pendingJsCallbacks = new Map();
+        // Handles retained for native transfer while encoding a message. If encoding or post fails,
+        // their new native reference or restored strong entry must be rolled back.
+        // Any successful post removes its handles, including those prepared by an outer call.
+        const unpublishedHandles = new Set();
         const finalizationRegistry = typeof FinalizationRegistry === "function"
             ? new FinalizationRegistry(handle => {
                 try {
@@ -561,49 +620,52 @@ internal val jsWebViewRuntimeScript: String =
         objectByHandle.set(0, globalThis);
         handleByObject.set(globalThis, 0);
 
-        function retain(...values) {
-            for (let i = 0; i < values.length; i++) {
-                const value = values[i];
-                const handle = handleByObject.get(value);
-                if (handle === undefined) continue;
-                retainHandle(handle, value);
-            }
-        }
-
-        function retainHandle(handle, value, skipIfAlreadyRetained) {
-            if (handle === 0) return;
-            objectByHandle.set(handle, value);
-            const refCount = Math.max(0, refCountByHandle.get(handle) || 0);
-            if (refCount === 0 || !skipIfAlreadyRetained) {
-                refCountByHandle.set(handle, refCount + 1);
-            }
-        }
-
-        function release(...values) {
-            for (let i = 0; i < values.length; i++) {
-                const value = values[i];
-                const handle = handleByObject.get(value);
-                if (handle === undefined) continue;
-                releaseHandle(handle);
-            }
+        function retainHandle(handle) {
+            updateHandleRefCount(handle, 1);
         }
 
         function releaseHandle(handle) {
-            if (handle === 0) return;
-            const refCount = refCountByHandle.get(handle);
-            if (refCount === undefined) {
-                return true;
-            } else if (refCount <= 1) {
-                refCountByHandle.delete(handle);
-                return true;
-            } else {
-                refCountByHandle.set(handle, refCount - 1);
-                return false;
+            updateHandleRefCount(handle, -1);
+        }
+
+        function retainCallbackHandles(handles) {
+            for (let i = 0; i < handles.length; i += 2) retainHandle(handles[i]);
+        }
+
+        function releaseCallbackHandles(handles) {
+            for (let i = 0; i < handles.length; i += 2) releaseHandle(handles[i]);
+        }
+
+        function commitHandles(handles) {
+            // A nested call may send the same handle; an outer failure must then preserve it.
+            if (unpublishedHandles.size === 0) return;
+            for (let i = 0; i < handles.length; i += 2) unpublishedHandles.delete(handles[i]);
+        }
+
+        function rollbackHandles(handles) {
+            // Pairs contain the handle and its change: 0 = existing, 1 = allocated, 2 = re-exported.
+            for (let i = handles.length - 2; i >= 0; i -= 2) {
+                const handle = handles[i];
+                const state = handles[i + 1];
+                if (state === 1 && unpublishedHandles.delete(handle)) {
+                    const value = objectByHandle.get(handle);
+                    handleByObject.delete(value);
+                    if (finalizationRegistry) finalizationRegistry.unregister(value);
+                    releaseHandle(handle);
+                } else if (state === 2 && unpublishedHandles.delete(handle) && !refCountByHandle.has(handle)) {
+                    objectByHandle.delete(handle);
+                }
             }
         }
 
-        function releaseHandleAndDeleteIfUnused(handle) {
-            if (releaseHandle(handle)) {
+        function updateHandleRefCount(handle, change) {
+            if (handle === 0) return;
+            const refCount = (refCountByHandle.get(handle) || 0) + change;
+            if (refCount > 0) {
+                refCountByHandle.set(handle, refCount);
+            } else {
+                // A zero delta must also drop an unowned value kept alive by re-export.
+                refCountByHandle.delete(handle);
                 objectByHandle.delete(handle);
             }
         }
@@ -643,7 +705,7 @@ internal val jsWebViewRuntimeScript: String =
             throw new Error("Unknown JsWebView argument");
         }
 
-        function encode(value) {
+        function encode(value, handles) {
             const valueType = typeof value;
             if (value === null || valueType !== "object" && valueType !== "function") {
                 const encoded = coreCodec.encode(value);
@@ -651,17 +713,27 @@ internal val jsWebViewRuntimeScript: String =
                 return coreCodec.stringifyJson(encoded);
             }
             let handle = handleByObject.get(value);
+            let state = 0;
             if (handle === undefined) {
                 if (nextHandle >= maxHandle) {
                     throw new Error("JsWebView handle limit reached");
                 }
                 handle = nextHandle++;
                 handleByObject.set(value, handle);
+                // Supply the first native reference without requiring a separate retain command.
+                retainHandle(handle);
+                unpublishedHandles.add(handle);
+                state = 1;
                 if (finalizationRegistry) {
-                    finalizationRegistry.register(value, handle);
+                    finalizationRegistry.register(value, handle, value);
                 }
+            } else if (handle !== 0 && !objectByHandle.has(handle)) {
+                state = 2;
+                unpublishedHandles.add(handle);
             }
-            retainHandle(handle, value, true);
+            if (handle !== 0) handles.push(handle, state);
+            // Keep re-exported values reachable until the native refcount batch arrives.
+            objectByHandle.set(handle, value);
             return '[${JS_WEB_VIEW_HANDLE_TAG.toJson()},' + encodeHandle(handle, typeOf(value)) + ']';
         }
 
@@ -683,34 +755,41 @@ internal val jsWebViewRuntimeScript: String =
             return ${JsWebViewProtocolHandleType.OBJECT.code};
         }
 
-        function encodeAsList(values) {
+        function encodeAsList(values, handles) {
             let result = "[";
             for (let i = 0; i < values.length; i++) {
                 if (i !== 0) {
                     result += ",";
                 }
-                result += encode(values[i]);
+                result += encode(values[i], handles);
             }
             result += "]";
             return result;
         }
 
-        function runCommand (command, requestId) {
+        function runCommand (command, handles) {
             switch (command[0]) {
                 case ${JsWebViewProtocolCode.COMMAND_EVALUATE.toJson()}: {
-                    const errorKey = "__appZenmoneyEvalError" + requestId;
+                    // Keep the eval source stable across requests and restore the outer evaluation's error state.
+                    const errorKey = "__appZenmoneyEvalError";
+                    const hadErrorBox = Object.prototype.hasOwnProperty.call(globalThis, errorKey);
+                    const previousErrorBox = globalThis[errorKey];
                     globalThis[errorKey] = null;
-                    const value = (0, eval)(
-                        "try {\n" +
-                        command[1] +
-                        "\n} catch (__appZenmoneyEvalError) { globalThis[" + JSON.stringify(errorKey) + "] = { error: __appZenmoneyEvalError }; }"
-                    );
-                    const errorBox = globalThis[errorKey];
-                    delete globalThis[errorKey];
-                    if (errorBox) {
-                        throw errorBox.error;
+                    try {
+                        const value = (0, eval)(
+                            "try {\n" + command[1] +
+                            "\n} catch (__appZenmoneyEvalError) { globalThis.__appZenmoneyEvalError = { error: __appZenmoneyEvalError }; }"
+                        );
+                        const errorBox = globalThis[errorKey];
+                        if (errorBox) throw errorBox.error;
+                        return encode(value, handles);
+                    } finally {
+                        if (hadErrorBox) {
+                            globalThis[errorKey] = previousErrorBox;
+                        } else {
+                            delete globalThis[errorKey];
+                        }
                     }
-                    return encode(value);
                 }
 
                 case ${JsWebViewProtocolCode.COMMAND_DECODE_EXPRESSION.toJson()}: {
@@ -719,18 +798,18 @@ internal val jsWebViewRuntimeScript: String =
                     }
                     const decoder = objectByHandle.get(command[1]);
                     if (typeof decoder !== "function") throw new Error("Unknown expression decoder handle");
-                    return encode(decoder(command[2], command[3].map(decode), true));
+                    return encode(decoder(command[2], command[3].map(decode), true), handles);
                 }
 
                 case ${JsWebViewProtocolCode.COMMAND_CREATE_ARRAY.toJson()}:
-                    return encode(command[1].map(decode));
+                    return encode(command[1].map(decode), handles);
 
                 case ${JsWebViewProtocolCode.COMMAND_CREATE_UINT8ARRAY.toJson()}: {
                     if (!Array.isArray(command[1]) || command[1][0] !== ${ExpressionValueTag.UINT8_ARRAY.toJson()}) {
                         throw new Error("Expected encoded Uint8Array");
                     }
                     const value = coreCodec.decode(command[1], coreCodec.createGraphContext());
-                    return encode(value);
+                    return encode(value, handles);
                 }
 
                 case ${JsWebViewProtocolCode.COMMAND_READ_UINT8ARRAY.toJson()}: {
@@ -747,88 +826,74 @@ internal val jsWebViewRuntimeScript: String =
                         const thiz = this;
                         return new Promise((resolve, reject) => {
                             const jsCallbackId = nextJsCallbackId++;
-
-                            pendingJsCallbacks.set(jsCallbackId, {
-                                resolve: function () {
-                                    try {
-                                        resolve.apply(this, arguments);
-                                    } finally {
-                                        release(thiz);
-                                        release(...args);
-                                    }
-                                },
-                                reject: function () {
-                                    try {
-                                        reject.apply(this, arguments);
-                                    } finally {
-                                        release(thiz);
-                                        release(...args);
-                                    }
-                                }
-                            });
-
-                            const encodedThis = encode(thiz);
-                            const encodedArgs = encodeAsList(args);
-                            retain(thiz);
-                            retain(...args);
-
+                            const callbackHandles = [];
                             try {
+                                const encodedThis = encode(thiz, callbackHandles);
+                                const encodedArgs = encodeAsList(args, callbackHandles);
+                                retainCallbackHandles(callbackHandles);
+                                pendingJsCallbacks.set(jsCallbackId, { resolve, reject, handles: callbackHandles });
                                 post(
                                     '[${JsWebViewProtocolCode.CALLBACK_FUNCTION.toJson()},' +
                                     jsCallbackId + ',' + callbackId + ',' + encodedThis + ',' + encodedArgs + ']'
                                 );
+                                commitHandles(callbackHandles);
                             } catch (error) {
-                                const callback = pendingJsCallbacks.get(jsCallbackId);
-                                if (callback) {
-                                    pendingJsCallbacks.delete(jsCallbackId);
-                                    callback.reject(error);
-                                }
+                                if (pendingJsCallbacks.delete(jsCallbackId)) releaseCallbackHandles(callbackHandles);
+                                rollbackHandles(callbackHandles);
+                                reject(error);
                             }
                         });
-                    });
+                    }, handles);
                 }
 
                 case ${JsWebViewProtocolCode.COMMAND_CREATE_PROMISE.toJson()}: {
                     const executorCallbackId = command[1];
                     return encode(new Promise((resolve, reject) => {
+                        const executorHandles = [];
                         try {
                             post(
                                 '[${JsWebViewProtocolCode.CALLBACK_PROMISE_EXECUTOR.toJson()},' +
-                                executorCallbackId + ',' + encode(resolve) + ',' + encode(reject) + ']'
+                                executorCallbackId + ',' + encode(resolve, executorHandles) + ',' + encode(reject, executorHandles) + ']'
                             );
+                            commitHandles(executorHandles);
                         } catch (error) {
+                            rollbackHandles(executorHandles);
                             reject(error);
                         }
-                    }));
+                    }), handles);
                 }
 
                 case ${JsWebViewProtocolCode.COMMAND_GET_OBJECT_VALUE.toJson()}: {
                     const receiver = objectByHandle.get(command[1]);
-                    return encode(receiver[command[2]]);
+                    return encode(receiver[command[2]], handles);
                 }
 
                 case ${JsWebViewProtocolCode.COMMAND_SET_OBJECT_VALUE.toJson()}: {
                     const receiver = objectByHandle.get(command[1]);
                     receiver[command[2]] = decode(command[3]);
-                    return encode(undefined);
+                    return encode(undefined, handles);
                 }
 
                 case ${JsWebViewProtocolCode.COMMAND_CALL_FUNCTION.toJson()}: {
                     const f = objectByHandle.get(command[1]);
                     const thiz = command[2] == null ? globalThis : objectByHandle.get(command[2]);
                     const value = f.apply(thiz, command[3].map(decode));
-                    return encode(value);
+                    return encode(value, handles);
                 }
 
                 case ${JsWebViewProtocolCode.COMMAND_CONSTRUCT.toJson()}: {
                     const f = objectByHandle.get(command[1]);
                     const value = new f(...command[2].map(decode));
-                    return encode(value);
+                    return encode(value, handles);
                 }
 
-                case ${JsWebViewProtocolCode.COMMAND_RELEASE.toJson()}:
-                    releaseHandleAndDeleteIfUnused(command[1]);
-                    return encode(undefined);
+                case ${JsWebViewProtocolCode.COMMAND_UPDATE_REF_COUNTS.toJson()}: {
+                    const changes = command[1];
+                    for (let i = 0; i < changes.length; i += 2) {
+                        updateHandleRefCount(changes[i], changes[i + 1]);
+                    }
+                    return encode(undefined, handles);
+                }
 
                 default:
                     throw new Error("unexpected JsWebView message " + command[0]);
@@ -838,15 +903,25 @@ internal val jsWebViewRuntimeScript: String =
         window.$JS_WEB_VIEW_BRIDGE_OBJECT = {
             dispatch (message, requestId) {
                 if (requestId !== undefined) {
+                    const handles = [];
                     try {
-                        post('[${JsWebViewProtocolCode.CALLBACK_RESULT.toJson()},' + requestId + ',' + runCommand(message, requestId) + ']');
+                        post('[${JsWebViewProtocolCode.CALLBACK_RESULT.toJson()},' + requestId + ',' + runCommand(message, handles) + ']');
+                        commitHandles(handles);
                     } catch (error) {
-                        post('[${JsWebViewProtocolCode.CALLBACK_ERROR.toJson()},' + requestId + ',' + encode(error) + ']');
+                        rollbackHandles(handles);
+                        const errorHandles = [];
+                        try {
+                            post('[${JsWebViewProtocolCode.CALLBACK_ERROR.toJson()},' + requestId + ',' + encode(error, errorHandles) + ']');
+                            commitHandles(errorHandles);
+                        } catch (postError) {
+                            rollbackHandles(errorHandles);
+                            throw postError;
+                        }
                     }
                     return;
                 }
 
-                if (message[0] === ${JsWebViewProtocolCode.COMMAND_RELEASE.toJson()}) {
+                if (message[0] === ${JsWebViewProtocolCode.COMMAND_UPDATE_REF_COUNTS.toJson()}) {
                     runCommand(message);
                     return;
                 }
@@ -870,6 +945,8 @@ internal val jsWebViewRuntimeScript: String =
                     }
                 } catch (e) {
                     callback.reject(e);
+                } finally {
+                    releaseCallbackHandles(callback.handles);
                 }
             },
         };

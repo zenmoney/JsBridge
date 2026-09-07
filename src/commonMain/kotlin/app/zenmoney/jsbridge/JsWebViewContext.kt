@@ -1,5 +1,8 @@
 package app.zenmoney.jsbridge
 
+import androidx.collection.MutableIntObjectMap
+import androidx.collection.mutableIntIntMapOf
+import androidx.collection.mutableIntObjectMapOf
 import app.zenmoney.jsbridge.serialization.JsValueWire
 import co.touchlab.stately.concurrency.Lock
 import co.touchlab.stately.concurrency.withLock
@@ -11,7 +14,7 @@ private class JsWebViewThrownError(
 
 private const val NATIVE_EXCEPTION_TAG = "app.zenmoney.jsbridge.nativeException"
 
-private typealias JsWebViewPendingRequests = MutableMap<Int, (Result<JsWebViewProtocolValue>) -> Unit>
+private typealias JsWebViewPendingRequests = MutableIntObjectMap<(Result<JsWebViewProtocolValue>) -> Unit>
 
 class JsWebViewContext internal constructor(
     private val createWebView: () -> JsWebView,
@@ -29,7 +32,8 @@ class JsWebViewContext internal constructor(
 
     private var requestId = 1
     private val pendingRequestsLock = Lock()
-    private val pendingRequests: JsWebViewPendingRequests = mutableMapOf()
+    private val pendingRequests: JsWebViewPendingRequests = mutableIntObjectMapOf()
+    private val pendingHandleRefCountChanges = mutableIntIntMapOf()
 
     init {
         invokeOnClose {
@@ -100,11 +104,11 @@ class JsWebViewContext internal constructor(
         )
 
     private var callbackId = 0
-    private val refCounts = mutableMapOf<Int, Int>()
-    private val tagsByHandle = mutableMapOf<Int, MutableMap<String, Any>>()
-    private val functionCallbackIds = mutableMapOf<Int, Int>()
-    private val functionByCallbackId = mutableMapOf<Int, JsFunctionScope.(args: List<JsValue>) -> JsValue>()
-    private val promiseExecutorByCallbackId = mutableMapOf<Int, JsScope.(resolve: JsFunction, reject: JsFunction) -> Unit>()
+    private val refCounts = mutableIntIntMapOf()
+    private val tagsByHandle = mutableIntObjectMapOf<MutableMap<String, Any>>()
+    private val functionCallbackIds = mutableIntIntMapOf()
+    private val functionByCallbackId = mutableIntObjectMapOf<JsFunctionScope.(args: List<JsValue>) -> JsValue>()
+    private val promiseExecutorByCallbackId = mutableIntObjectMapOf<JsScope.(resolve: JsFunction, reject: JsFunction) -> Unit>()
 
     override val globalThis: JsObject =
         createWebViewObject(0, JsWebViewProtocolHandleType.OBJECT)
@@ -259,7 +263,7 @@ class JsWebViewContext internal constructor(
     override fun closeValue(value: JsValue) {
         if (value is JsWebViewObject && !value.isSingleton()) {
             if (releaseWebViewHandle(value.handle)) {
-                sendWebViewCommand(JsWebViewMessage.Release(value.handle))
+                enqueueHandleRefCountChange(value.handle, -1)
             }
         }
         core.removeValue(value)
@@ -273,6 +277,7 @@ class JsWebViewContext internal constructor(
             functionCallbackIds.clear()
             tagsByHandle.clear()
             refCounts.clear()
+            pendingRequestsLock.withLock { pendingHandleRefCountChanges.clear() }
             closeWebView()
         }
     }
@@ -305,9 +310,9 @@ class JsWebViewContext internal constructor(
     private fun onWebViewValueDeallocated(handle: Int) {
         refCounts.remove(handle)
         tagsByHandle.remove(handle)
-        functionCallbackIds
-            .remove(handle)
-            ?.let { functionByCallbackId.remove(it) }
+        val callbackId = functionCallbackIds.getOrElse(handle) { return }
+        functionCallbackIds.remove(handle)
+        functionByCallbackId.remove(callbackId)
     }
 
     internal fun getTag(
@@ -468,7 +473,7 @@ class JsWebViewContext internal constructor(
             return -1
         }
         try {
-            getOrCreateWebView().evaluateJavaScript(message.toScript(id))
+            evaluateWebViewMessage(message, id)
         } catch (e: Throwable) {
             completeRequest(id, Result.failure(e))
         }
@@ -477,7 +482,42 @@ class JsWebViewContext internal constructor(
 
     private fun sendWebViewCommand(message: JsWebViewMessage) {
         if (core.isClosed) return
-        getOrCreateWebView().evaluateJavaScript(message.toScript())
+        evaluateWebViewMessage(message)
+    }
+
+    private fun enqueueHandleRefCountChange(
+        handle: Int,
+        change: Int,
+    ) {
+        pendingRequestsLock.withLock {
+            if (core.isClosed) return
+            // Keep zero deltas: reacquire (+1) followed by close (-1) must still remove a
+            // re-exported value that JS holds in transit without a counted reference.
+            pendingHandleRefCountChanges[handle] = pendingHandleRefCountChanges.getOrDefault(handle, 0) + change
+        }
+    }
+
+    private fun evaluateWebViewMessage(
+        message: JsWebViewMessage,
+        requestId: Int = 0,
+    ) {
+        val initializedWebView = getOrCreateWebView()
+        val changes =
+            pendingRequestsLock.withLock {
+                if (pendingHandleRefCountChanges.isEmpty()) {
+                    null
+                } else {
+                    JsWebViewMessage.UpdateRefCounts(pendingHandleRefCountChanges).also { pendingHandleRefCountChanges.clear() }
+                }
+            }
+        try {
+            val script = if (requestId == 0) message.toScript(changes) else message.toScript(requestId, changes)
+            initializedWebView.evaluateJavaScript(script)
+        } catch (e: Throwable) {
+            // Decode the saved batch only on submission failure; the normal path reuses the map.
+            changes?.forEachRefCountChange(::enqueueHandleRefCountChange)
+            throw e
+        }
     }
 
     private fun completeRequest(
@@ -499,9 +539,9 @@ class JsWebViewContext internal constructor(
 
     private fun takePendingRequests(): List<(Result<JsWebViewProtocolValue>) -> Unit> =
         withPendingRequests { requests ->
-            requests.values.toList().also {
-                requests.clear()
-            }
+            buildList(requests.size) {
+                requests.forEachValue { add(it) }
+            }.also { requests.clear() }
         }
 
     private fun getOrCreateWebView(): JsWebView {
@@ -553,14 +593,20 @@ class JsWebViewContext internal constructor(
     }
 
     private fun retainWebViewHandle(handle: Int) {
-        refCounts[handle] =
-            refCounts.getOrElse(handle) { 0 } + 1
+        if (handle == 0) return
+        val count = refCounts.getOrDefault(handle, -1)
+        refCounts[handle] = if (count == -1) 1 else count + 1
+        // JS supplies the first reference when allocating a handle; only reacquisition needs a command.
+        if (count == 0) {
+            enqueueHandleRefCountChange(handle, 1)
+        }
     }
 
     private fun releaseWebViewHandle(handle: Int): Boolean {
-        val count = refCounts[handle] ?: return true
+        val count = refCounts.getOrElse(handle) { return true }
         if (count <= 1) {
-            refCounts.remove(handle)
+            // Remember previously received handles until onWebViewValueDeallocated removes them.
+            refCounts[handle] = 0
             return true
         }
         refCounts[handle] = count - 1

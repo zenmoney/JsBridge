@@ -2,6 +2,7 @@
 
 package app.zenmoney.jsbridge
 
+import androidx.collection.mutableIntObjectMapOf
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.jvm.JvmInline
 
@@ -123,7 +124,7 @@ class JsValueReferenceStore internal constructor(
 
     private var nextReferenceId = 1
     private var isClosed = false
-    private val valueByReferenceId = mutableMapOf<Int, OwnedValue>()
+    private val valueByReferenceId = mutableIntObjectMapOf<OwnedValue>()
 
     private val foreignReferenceByRepresentation = mutableMapOf<JsValue, JsValueReference>()
     private val representationByForeignReference = mutableMapOf<JsValueReference, JsValue>()
@@ -245,9 +246,8 @@ class JsValueReferenceStore internal constructor(
         if (isClosed) return
         isClosed = true
 
-        val ownedValues = valueByReferenceId.values.toList()
+        valueByReferenceId.forEachValue { it.reference.invalidate() }
         valueByReferenceId.clear()
-        ownedValues.forEach { it.reference.invalidate() }
 
         val representedReferences = foreignReferenceByRepresentation.values.toList()
         foreignReferenceByRepresentation.clear()

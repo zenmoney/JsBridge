@@ -271,6 +271,12 @@ internal val expressionValueCoreCodecFactorySource: String =
         const Uint8ArrayConstructor = globalThis.Uint8Array;
         const jsonStringify = JSON.stringify;
         const bindCall = Function.prototype.call.bind(Function.prototype.call);
+        const uint8ArrayToBase64 = typeof Uint8ArrayConstructor.prototype.toBase64 === "function"
+            ? bindCall.bind(undefined, Uint8ArrayConstructor.prototype.toBase64)
+            : null;
+        const uint8ArrayFromBase64 = typeof Uint8ArrayConstructor.fromBase64 === "function"
+            ? bindCall.bind(undefined, Uint8ArrayConstructor.fromBase64, Uint8ArrayConstructor)
+            : null;
         const bigIntToString =
             BigIntConstructor === null ? null : bindCall.bind(undefined, BigIntConstructor.prototype.toString);
         const mapGet = bindCall.bind(undefined, MapConstructor.prototype.get);
@@ -532,6 +538,7 @@ internal val expressionValueCoreCodecFactorySource: String =
 
         function bytesToBase64(bytes, owner) {
             requireStableByteBuffer(bytes, owner || "Uint8Array");
+            if (uint8ArrayToBase64 !== null) return uint8ArrayToBase64(bytes);
             let result = "";
             const length = typedArrayLength(bytes);
             for (let index = 0; index < length; index += 3) {
@@ -581,6 +588,11 @@ internal val expressionValueCoreCodecFactorySource: String =
         function base64ToBytes(value) {
             if (typeof value !== "string" || value.length % 4 !== 0) {
                 throw new Error("Invalid canonical base64 payload");
+            }
+            if (uint8ArrayFromBase64 !== null) {
+                // The built-in decoder accepts whitespace even in strict mode; the wire format does not.
+                if (regexpTest(/[^A-Za-z0-9+/=]/, value)) throw new Error("Invalid canonical base64 payload");
+                return uint8ArrayFromBase64(value, { alphabet: "base64", lastChunkHandling: "strict" });
             }
 
             let padding = 0;
