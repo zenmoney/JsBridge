@@ -340,7 +340,7 @@ actual class JsEngineContext :
         JsObjectImpl(this, JSValue.valueWithNewObjectInContext(jsContext)!!)
             .also { registerValue(it) }
 
-    actual override fun createPromise(executor: JsScope.(JsFunction, JsFunction) -> Unit): JsPromise =
+    actual override fun createPromise(executor: JsScope.(resolve: JsFunction, reject: JsFunction) -> Unit): JsPromise =
         createFunction {
             executor(
                 this,

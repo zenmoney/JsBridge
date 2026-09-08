@@ -1,10 +1,12 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
+import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest
 import java.util.Properties
 
 plugins {
-    kotlin("multiplatform")
-    kotlin("plugin.serialization")
-    id("com.android.kotlin.multiplatform.library")
-    id("org.jlleitschuh.gradle.ktlint")
+    alias(libs.plugins.kotlin.multiplatform)
+    alias(libs.plugins.android.kmp.library)
+    alias(libs.plugins.ktlint)
     id("maven-publish")
     id("signing")
 }
@@ -15,22 +17,39 @@ version = "2.0.0-rc12"
 repositories {
     google()
     mavenCentral()
-    maven(url = "https://jitpack.io")
+    maven(url = "https://jitpack.io") {
+        content { includeGroup("com.github.ynab") }
+    }
 }
 
 ktlint {
-    version.set("1.8.0")
+    version.set(libs.versions.ktlint.tool)
 }
 
 kotlin {
-    jvm()
+    jvm {
+        compilerOptions {
+            // Match Javet's Java 8 runtime baseline while building with JDK 17.
+            jvmTarget.set(JvmTarget.JVM_1_8)
+            freeCompilerArgs.add("-Xjdk-release=8")
+        }
+    }
     jvmToolchain(17)
 
     android {
         namespace = "app.zenmoney.jsbridge"
-        minSdk = 24
-        compileSdk = 35
-        withDeviceTest {
+        minSdk =
+            libs.versions.android.minSdk
+                .get()
+                .toInt()
+        compileSdk =
+            libs.versions.android.compileSdk
+                .get()
+                .toInt()
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        withDeviceTestBuilder {
+            sourceSetTreeName = "test"
+        }.configure {
             instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         }
     }
@@ -47,89 +66,86 @@ kotlin {
 
     applyDefaultHierarchyTemplate()
     sourceSets {
-        val commonMain by getting {
-            dependencies {
-                implementation("co.touchlab:stately-concurrency:2.1.0")
-                implementation("androidx.collection:collection:1.5.0")
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+        val commonMain =
+            getByName("commonMain") {
+                dependencies {
+                    implementation(libs.stately.concurrency)
+                    implementation(libs.androidx.collection)
+                    api(libs.kotlinx.coroutines.core)
+                }
             }
-        }
-        val commonTest by getting {
+        named("commonTest") {
             dependencies {
                 implementation(kotlin("test"))
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+                implementation(libs.kotlinx.coroutines.test)
             }
         }
-        val jvmAndAndroidMain by creating {
-            dependsOn(commonMain)
-            dependencies {
-                compileOnly("com.caoccao.javet:javet:5.0.2")
+        val jvmAndAndroidMain =
+            create("jvmAndAndroidMain") {
+                dependsOn(commonMain)
+                dependencies {
+                    compileOnly(libs.javet)
+                }
             }
-        }
-        val jvmMain by getting {
+        named("jvmMain") {
             dependsOn(jvmAndAndroidMain)
             dependencies {
-                implementation("com.caoccao.javet:javet:5.0.8")
-                implementation("com.caoccao.javet:javet-v8-linux-arm64:5.0.8")
-                implementation("com.caoccao.javet:javet-v8-linux-x86_64:5.0.8")
-                implementation("com.caoccao.javet:javet-v8-macos-arm64:5.0.8")
-                implementation("com.caoccao.javet:javet-v8-windows-x86_64:5.0.8")
+                implementation(libs.javet)
+                runtimeOnly(libs.javet.v8.linux.arm64)
+                runtimeOnly(libs.javet.v8.linux.x64)
+                runtimeOnly(libs.javet.v8.macos.arm64)
+                runtimeOnly(libs.javet.v8.windows.x64)
             }
         }
-        val androidMain by getting {
+        named("androidMain") {
             dependencies {
-                implementation("com.github.ynab:j2v8:6.2.1-16kb.2")
+                implementation(libs.j2v8)
             }
         }
-        val androidDeviceTest by getting {
-            dependsOn(commonTest)
+        named("androidDeviceTest") {
             dependencies {
-                implementation("androidx.test:core:1.7.0")
-                implementation("androidx.test:runner:1.7.0")
+                implementation(libs.androidx.test.core)
+                implementation(libs.androidx.test.runner)
             }
         }
-
-        val iosArm64Main by getting
-        val iosSimulatorArm64Main by getting
-        val macosArm64Main by getting
     }
 
-    sourceSets.all {
-        languageSettings.apply {
-            optIn("kotlinx.cinterop.ExperimentalForeignApi")
-            optIn("kotlinx.coroutines.ExperimentalCoroutinesApi")
-            optIn("kotlinx.coroutines.FlowPreview")
-            optIn("kotlinx.serialization.ExperimentalSerializationApi")
-            optIn("kotlin.RequiresOptIn")
-            optIn("kotlin.contracts.ExperimentalContracts")
-            optIn("kotlin.experimental.ExperimentalNativeApi")
-            optIn("kotlin.js.ExperimentalJsExport")
-        }
+    compilerOptions {
+        optIn.addAll(
+            "kotlinx.coroutines.ExperimentalCoroutinesApi",
+            "kotlinx.coroutines.FlowPreview",
+            "kotlin.contracts.ExperimentalContracts",
+        )
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
+
+    targets.withType<KotlinNativeTarget>().configureEach {
+        compilerOptions.optIn.add("kotlinx.cinterop.ExperimentalForeignApi")
     }
 }
 
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>().configureEach {
-    compilerOptions
-        .jvmTarget
-        .set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_1_8)
+tasks.withType<JavaCompile>().configureEach {
+    options.release.set(8)
 }
 
-// kotlin.targets.withType(org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget::class.java) {
-//     binaries.all {
-//         freeCompilerArgs += "-Xgc=cms"
-//         freeCompilerArgs += "-Xallocator=custom"
-//     }
-// }
+tasks.withType<KotlinNativeSimulatorTest>().configureEach {
+    // WKWebView needs the booted simulator's system services.
+    standalone.set(false)
+}
 
-// See https://youtrack.jetbrains.com/issue/KT-55751
-configurations.names.forEach { name ->
-    if (name.endsWith("Fat")) {
-        configurations.named(name).configure {
-            attributes {
-                attribute(Attribute.of("isFat", String::class.java), "true")
-            }
-        }
-    }
+tasks.register<Test>("jvmTestJava8") {
+    group = "verification"
+    description = "Runs the JVM tests on Javet's minimum supported Java version."
+    val jvmTest = tasks.named<Test>("jvmTest").get()
+    testClassesDirs = jvmTest.testClassesDirs
+    classpath = jvmTest.classpath
+    javaLauncher.set(
+        javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(8))
+            // Azul provides a native macOS ARM64 JDK 8 for the bundled Javet ARM64 runtime.
+            vendor.set(JvmVendorSpec.AZUL)
+        },
+    )
 }
 
 extra.apply {
@@ -160,34 +176,29 @@ extra.apply {
     }
 }
 
-val javadocJar by tasks.registering(Jar::class) {
-    archiveClassifier.set("javadoc")
-}
+val javadocJar =
+    tasks.register<Jar>("javadocJar") {
+        archiveClassifier.set("javadoc")
+    }
 // https://github.com/gradle/gradle/issues/26091
 val signingTasks = tasks.withType<Sign>()
 tasks.withType<AbstractPublishToMaven>().configureEach {
     dependsOn(signingTasks)
 }
-tasks.register("publishToBuildDir") {
-    doLast {
-        extra.apply {
-            set("publishToBuildDir", true)
-        }
-    }
-    finalizedBy("publish")
-}
-
 publishing {
     repositories {
         maven {
+            name = "buildDir"
+            url = uri(layout.buildDirectory.dir("m2"))
+        }
+        maven {
+            name = "sonatype"
             url =
                 uri(
-                    if (rootProject.hasProperty("publishToBuildDir")) {
-                        layout.buildDirectory.dir("m2")
-                    } else if (version.toString().endsWith("SNAPSHOT")) {
-                        "https://s01.oss.sonatype.org/content/repositories/snapshots/"
+                    if (version.toString().endsWith("SNAPSHOT")) {
+                        "https://central.sonatype.com/repository/maven-snapshots/"
                     } else {
-                        "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
+                        "https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/"
                     },
                 )
             if (listOf("ossrhUsername", "ossrhPassword").all { rootProject.hasProperty(it) }) {

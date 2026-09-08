@@ -75,6 +75,7 @@ private fun createWebView(configuration: WKWebViewConfiguration): WKWebView {
     return checkNotNull(webView)
 }
 
+@OptIn(ExperimentalForeignApi::class)
 internal actual class JsWebViewBlockingRequest<T> {
     private val semaphore = dispatch_semaphore_create(0)
 

@@ -403,7 +403,7 @@ actual class JsEngineContext :
             registerValue(it)
         }
 
-    actual override fun createPromise(executor: JsScope.(JsFunction, JsFunction) -> Unit): JsPromise =
+    actual override fun createPromise(executor: JsScope.(resolve: JsFunction, reject: JsFunction) -> Unit): JsPromise =
         jsScoped(this) {
             (
                 promiseClass.invokeAsConstructor(

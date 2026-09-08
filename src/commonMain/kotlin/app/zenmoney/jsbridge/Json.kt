@@ -200,9 +200,7 @@ internal fun String.skipJsonString(startIndex: Int): Int {
             '\\' -> {
                 check(index < length) { "Unterminated escape sequence at $index" }
                 when (this[index++]) {
-                    '"', '\\', '/', 'b', 'f', 'n', 'r', 't' -> {
-                        Unit
-                    }
+                    '"', '\\', '/', 'b', 'f', 'n', 'r', 't' -> {}
 
                     'u' -> {
                         check(index + 4 <= length) { "Invalid unicode escape at $index" }

@@ -1,0 +1,49 @@
+[versions]
+android-compileSdk = "37"
+android-minSdk = "24"
+
+kotlin = "2.4.20"
+agp = "9.4.0"
+ktlint-tool = "1.8.0"
+ktlint-gradle = "14.2.0"
+
+# KotlinX
+kotlinx-coroutines = "1.11.0"
+
+# AndroidX
+androidx-collection = "1.6.0"
+androidx-test-core = "1.7.0"
+androidx-test-runner = "1.7.0"
+
+# Other shared
+stately = "2.1.0"
+
+# JavaScript engines
+javet = "5.0.11"
+j2v8 = "6.2.1-16kb.2"
+
+[libraries]
+# KotlinX
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
+
+# AndroidX
+androidx-collection = { module = "androidx.collection:collection", version.ref = "androidx-collection" }
+androidx-test-core = { module = "androidx.test:core", version.ref = "androidx-test-core" }
+androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidx-test-runner" }
+
+# Other shared
+stately-concurrency = { module = "co.touchlab:stately-concurrency", version.ref = "stately" }
+
+# JavaScript engines
+javet = { module = "com.caoccao.javet:javet", version.ref = "javet" }
+javet-v8-linux-arm64 = { module = "com.caoccao.javet:javet-v8-linux-arm64", version.ref = "javet" }
+javet-v8-linux-x64 = { module = "com.caoccao.javet:javet-v8-linux-x86_64", version.ref = "javet" }
+javet-v8-macos-arm64 = { module = "com.caoccao.javet:javet-v8-macos-arm64", version.ref = "javet" }
+javet-v8-windows-x64 = { module = "com.caoccao.javet:javet-v8-windows-x86_64", version.ref = "javet" }
+j2v8 = { module = "com.github.ynab:j2v8", version.ref = "j2v8" }
+
+[plugins]
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+android-kmp-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
+ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint-gradle" }

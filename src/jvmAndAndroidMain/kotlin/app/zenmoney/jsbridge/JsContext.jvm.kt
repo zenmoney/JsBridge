@@ -1,6 +1,6 @@
 package app.zenmoney.jsbridge
 
-import com.caoccao.javet.enums.V8ValueReferenceType
+import com.caoccao.javet.enums.V8ValueType
 import com.caoccao.javet.interop.V8Host
 import com.caoccao.javet.interop.V8Runtime
 import com.caoccao.javet.interop.callback.IJavetDirectCallable
@@ -342,7 +342,7 @@ actual class JsEngineContext :
         JsObjectImpl(this, v8Runtime.createV8ValueObject())
             .also { registerValue(it) }
 
-    actual override fun createPromise(executor: JsScope.(JsFunction, JsFunction) -> Unit): JsPromise =
+    actual override fun createPromise(executor: JsScope.(resolve: JsFunction, reject: JsFunction) -> Unit): JsPromise =
         jsScoped(this) {
             (
                 promiseClass.invokeAsConstructor(
@@ -414,7 +414,7 @@ actual class JsEngineContext :
             is ByteArray -> {
                 JsUint8ArrayImpl(
                     this,
-                    v8Runtime.createV8ValueTypedArray(V8ValueReferenceType.Uint8Array, value.size).apply { fromBytes(value) },
+                    v8Runtime.createV8ValueTypedArray(V8ValueType.Uint8Array, value.size).apply { fromBytes(value) },
                 )
             }
 
@@ -467,7 +467,7 @@ actual class JsEngineContext :
             }
 
             is V8ValueTypedArray -> {
-                if (value.type == V8ValueReferenceType.Uint8Array) {
+                if (value.type == V8ValueType.Uint8Array) {
                     JsUint8ArrayImpl(this, value)
                 } else {
                     JsObjectImpl(this, value)
