@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -94,6 +95,48 @@ abstract class JsContextTest {
 
             eventLoop.cancel()
             eventLoop.run()
+        }
+
+    @Test
+    fun valuesAreClosedWhileAsyncCleanupIsQueued() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext).apply { attachTo(context) }
+            val value = JsObject(context)
+            val scopedValue = JsScope(context).run { JsObject() }
+            val escapedValue = jsScoped(context) { JsObject().escape() }
+            val explicitlyClosed = JsObject(context).also { it.close() }
+            val values = listOf(value, scopedValue, escapedValue, context.globalThis, context.NULL, context.UNDEFINED)
+            values.forEach { assertFalse(it.isClosed) }
+            assertTrue(explicitlyClosed.isClosed)
+
+            val closeJob = context.closeAsync()
+
+            assertFalse(closeJob.isCompleted)
+            values.forEach {
+                assertTrue(it.isClosed)
+                assertTrue(it.core.scope != null)
+            }
+            closeJob.join()
+            values.forEach { assertNull(it.core.scope) }
+            eventLoop.runAndComplete()
+        }
+
+    @Test
+    fun eventLoopSkipsContextWhileAsyncCleanupIsQueued() =
+        runTest {
+            val dispatcher = StandardTestDispatcher(testScheduler)
+            val eventLoop = JsEventLoop(coroutineContext + dispatcher).apply { attachTo(context) }
+            // Queue the first tick before closeAsync() queues cleanup on the event-loop dispatcher.
+            val running = async(start = CoroutineStart.UNDISPATCHED) { eventLoop.runAndComplete() }
+
+            val closeJob = context.closeAsync()
+
+            assertTrue(context.isClosed)
+            assertFalse(closeJob.isCompleted)
+            withTimeout(5_000) {
+                running.await()
+                closeJob.join()
+            }
         }
 
     @Test

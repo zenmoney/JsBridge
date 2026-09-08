@@ -54,8 +54,9 @@ fun JsValue.toJson(): String =
 
 fun JsValue.toPlainValue(): Any? = context.core.toPlainValue(this)
 
+/** Whether this value or its owning context is closed. Runtime cleanup may still be pending. */
 val JsValue.isClosed: Boolean
-    get() = core.scope == null
+    get() = core.scope?._context?.isClosed != false
 
 val JsValue.isScoped: Boolean
     get() =
