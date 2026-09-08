@@ -3,7 +3,8 @@ package app.zenmoney.jsbridge
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-internal actual fun createJsWebView(): JsWebView = throw UnsupportedOperationException("JsWebViewContext is not available on JVM")
+internal actual fun createJsWebView(contextId: Int): JsWebView =
+    throw UnsupportedOperationException("JsWebViewContext is not available on JVM")
 
 internal actual class JsWebViewBlockingRequest<T> {
     private val latch = CountDownLatch(1)

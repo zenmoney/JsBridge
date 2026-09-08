@@ -42,7 +42,7 @@ fun JsWebViewContext(configuration: WKWebViewConfiguration): JsWebViewContext =
     }
 
 @OptIn(ExperimentalForeignApi::class)
-internal actual fun createJsWebView(): JsWebView = AppleJsWebView(createWebView())
+internal actual fun createJsWebView(contextId: Int): JsWebView = AppleJsWebView(createWebView())
 
 @OptIn(ExperimentalForeignApi::class)
 private fun createWebView(): WKWebView {

@@ -586,10 +586,13 @@ private val jsWebViewExpressionValueCodecTags =
         ExpressionValueTag.UINT8_ARRAY,
     )
 
-internal val jsWebViewRuntimeScript: String =
+internal val jsWebViewRuntimeScript: String = createJsWebViewRuntimeScript()
+
+internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
     """
     (function () {
-        if (window.$JS_WEB_VIEW_BRIDGE_OBJECT) return;
+        const sessionId = ${sessionId ?: "null"};
+        if (window.$JS_WEB_VIEW_BRIDGE_OBJECT && window.$JS_WEB_VIEW_BRIDGE_OBJECT.sessionId === sessionId) return;
 
         const coreCodec = ($expressionValueCoreCodecFactorySource)({
             enabledTags: [${jsWebViewExpressionValueCodecTags.joinToString(",") { it.toJson() }}],
@@ -672,7 +675,7 @@ internal val jsWebViewRuntimeScript: String =
 
         function post(message) {
             if (window.$JS_WEB_VIEW_ANDROID_INTERFACE && window.$JS_WEB_VIEW_ANDROID_INTERFACE.postMessage) {
-                window.$JS_WEB_VIEW_ANDROID_INTERFACE.postMessage(message);
+                window.$JS_WEB_VIEW_ANDROID_INTERFACE.postMessage(message, sessionId);
             } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.$JS_WEB_VIEW_IOS_HANDLER) {
                 window.webkit.messageHandlers.$JS_WEB_VIEW_IOS_HANDLER.postMessage(message);
             } else {
@@ -901,6 +904,7 @@ internal val jsWebViewRuntimeScript: String =
         }
 
         window.$JS_WEB_VIEW_BRIDGE_OBJECT = {
+            sessionId,
             dispatch (message, requestId) {
                 if (requestId !== undefined) {
                     const handles = [];

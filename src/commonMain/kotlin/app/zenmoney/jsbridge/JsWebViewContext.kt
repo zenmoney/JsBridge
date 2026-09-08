@@ -17,7 +17,7 @@ private const val NATIVE_EXCEPTION_TAG = "app.zenmoney.jsbridge.nativeException"
 private typealias JsWebViewPendingRequests = MutableIntObjectMap<(Result<JsWebViewProtocolValue>) -> Unit>
 
 class JsWebViewContext internal constructor(
-    private val createWebView: () -> JsWebView,
+    private val createWebView: (contextId: Int) -> JsWebView,
 ) : JsContext(Unit) {
     companion object {}
 
@@ -547,10 +547,10 @@ class JsWebViewContext internal constructor(
     private fun getOrCreateWebView(): JsWebView {
         check(!core.isClosed) { "JsContext is closed" }
         webView?.let { return it }
-        return createWebView().also { createdWebView ->
+        return createWebView(id).also { createdWebView ->
             try {
                 createdWebView.onMessage = webViewMessageHandler::handle
-                createdWebView.evaluateJavaScript(jsWebViewRuntimeScript)
+                createdWebView.initializeRuntime()
                 webView = createdWebView
             } catch (e: Throwable) {
                 createdWebView.onMessage = {}
