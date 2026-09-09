@@ -11,7 +11,14 @@ internal fun JsArray(
     value: Iterable<JsValue>,
 ): JsArray = context.createArray(value)
 
-fun JsScope.JsArray(value: Iterable<JsValue>): JsArray = JsArray(context, value).autoClose()
+context(scope: JsScope)
+fun JsArray(value: Iterable<JsValue>): JsArray = JsArray(scope.context, value).autoClose()
+
+context(scope: JsScope)
+operator fun JsArray.get(index: Int): JsValue {
+    scope.requireSameContext(this)
+    return getValue(index).autoClose()
+}
 
 inline fun <R, C : MutableCollection<in R>> JsArray.mapTo(
     destination: C,

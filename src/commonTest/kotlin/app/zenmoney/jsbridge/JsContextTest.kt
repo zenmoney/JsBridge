@@ -1505,6 +1505,97 @@ abstract class JsContextTest {
     }
 
     @Test
+    fun scopedOperationsBorrowOuterValuesAndOwnTheirResults() {
+        jsScoped(context) {
+            val sourceScope = this
+            val value = JsObject()
+            val array = JsArray(listOf(value))
+            val obj = JsObject().apply { this["value"] = value }
+            val function = eval("(function (value) { return value; })") as JsFunction
+            val results =
+                jsScoped(context) {
+                    listOf(JsValueAlias(value), array[0], obj["value"], function(value)).also { results ->
+                        results.forEach {
+                            assertTrue(it in this)
+                            assertFalse(it in sourceScope)
+                            assertEquals(value, it)
+                        }
+                        listOf(value, array, obj, function).forEach { assertTrue(it in sourceScope) }
+                    }
+                }
+            results.forEach { assertTrue(it.isClosed) }
+            listOf(value, array, obj, function).forEach { assertFalse(it.isClosed) }
+        }
+    }
+
+    @Test
+    fun scopedOperationsRejectAnotherContextBeforeExecutingJavascript() {
+        val sourceContext = context
+        createContext().use { otherContext ->
+            jsScoped(sourceContext) {
+                eval("globalThis.scopedOperationCalls = 0")
+                val function = eval("(function () { scopedOperationCalls++; return {}; })") as JsFunction
+                val obj = eval("({ get value() { scopedOperationCalls++; return {}; } })") as JsObject
+                val array =
+                    eval("Object.defineProperty([], '0', { get() { scopedOperationCalls++; return {}; } })") as JsArray
+                jsScoped(otherContext) {
+                    assertFailsWith<IllegalArgumentException> { obj["value"] }
+                    assertFailsWith<IllegalArgumentException> { array[0] }
+                    assertFailsWith<IllegalArgumentException> { function(thiz = sourceContext.globalThis) }
+                    assertFailsWith<IllegalArgumentException> { function(emptyList(), thiz = sourceContext.globalThis) }
+                    assertFailsWith<IllegalArgumentException> { function.invokeAsConstructor() }
+                    assertFailsWith<IllegalArgumentException> { function.invokeAsConstructor(emptyList()) }
+                    assertFailsWith<IllegalArgumentException> { JsValueAlias(obj) }
+                }
+                assertEquals(0, eval("scopedOperationCalls").int)
+                listOf(function, obj, array).forEach {
+                    assertFalse(it.isClosed)
+                    assertTrue(it in this)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun awaitRejectsAnotherContextBeforeAccessingEventLoop() =
+        runTest {
+            val sourceContext = context
+            createContext().use { otherContext ->
+                jsScoped(sourceContext) {
+                    val value = JsObject()
+                    jsScoped(otherContext) {
+                        assertFailsWith<IllegalArgumentException> { value.await() }
+                    }
+                    assertFalse(value.isClosed)
+                    assertTrue(value in this)
+                }
+            }
+        }
+
+    @Test
+    fun promiseAndFunctionPreserveReturnedValuesOwnership() =
+        runTestWithEventLoop {
+            jsScoped(context) {
+                val borrowed = JsObject()
+                val function = JsFunction { borrowed }
+                assertEquals(borrowed, function().await())
+
+                val promise = JsPromise { borrowed }
+                val result = promise.await()
+                assertEquals(borrowed, result)
+                assertTrue(result in this)
+                assertTrue(borrowed in this)
+                assertFalse(borrowed.isClosed)
+
+                JsObject().escape().use { escaped ->
+                    assertEquals(escaped, JsPromise { escaped }.await())
+                    assertFalse(escaped.isClosed)
+                    assertFalse(escaped.isScoped)
+                }
+            }
+        }
+
+    @Test
     fun callsOnCompletionListenerWhenEventLoopHasRunAndCompleted() =
         runTestWithEventLoop { eventLoop ->
             var isCancelled: Boolean? = null

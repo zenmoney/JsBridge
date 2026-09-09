@@ -16,6 +16,8 @@ internal fun JsStringObject(
     value: String,
 ): JsStringObject = context.createStringObject(value)
 
-fun JsScope.JsString(value: String): JsString = JsString(context, value).autoClose()
+context(scope: JsScope)
+fun JsString(value: String): JsString = JsString(scope.context, value).autoClose()
 
-fun JsScope.JsStringObject(value: String): JsStringObject = JsStringObject(context, value).autoClose()
+context(scope: JsScope)
+fun JsStringObject(value: String): JsStringObject = JsStringObject(scope.context, value).autoClose()

@@ -11,7 +11,14 @@ internal fun JsObject.getValue(key: String): JsValue = context.getObjectValue(th
 
 internal fun JsObject(context: JsContext): JsObject = context.createObject()
 
-fun JsScope.JsObject(): JsObject = JsObject(context).autoClose()
+context(scope: JsScope)
+fun JsObject(): JsObject = JsObject(scope.context).autoClose()
+
+context(scope: JsScope)
+operator fun JsObject.get(key: String): JsValue {
+    scope.requireSameContext(this)
+    return getValue(key).autoClose()
+}
 
 val JsObject.keys: Set<String>
     get() =

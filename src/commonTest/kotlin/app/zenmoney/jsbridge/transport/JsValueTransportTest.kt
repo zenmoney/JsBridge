@@ -9,6 +9,8 @@ import app.zenmoney.jsbridge.JsString
 import app.zenmoney.jsbridge.JsValue
 import app.zenmoney.jsbridge.boolean
 import app.zenmoney.jsbridge.escape
+import app.zenmoney.jsbridge.eval
+import app.zenmoney.jsbridge.invoke
 import app.zenmoney.jsbridge.isClosed
 import app.zenmoney.jsbridge.jsScoped
 import app.zenmoney.jsbridge.map
@@ -251,12 +253,10 @@ class JsValueTransportTest {
                 }
             val resolver =
                 object : JsValueTransportReferenceValueResolver<String> {
-                    override fun resolve(
-                        scope: JsScope,
-                        payload: String,
-                    ): JsValue {
+                    context(scope: JsScope)
+                    override fun resolve(payload: String): JsValue {
                         resolverScope = scope
-                        return scope.eval("({})").also { resolved = it }
+                        return eval("({})").also { resolved = it }
                     }
 
                     override fun commit() {
@@ -448,9 +448,9 @@ class JsValueTransportTest {
                             JsValueTransportDestination(
                                 context = destinationContext,
                                 referenceValueResolver =
-                                    JsValueTransportReferenceValueResolver<MetadataPayload> { scope, payload ->
+                                    JsValueTransportReferenceValueResolver<MetadataPayload> { payload ->
                                         receivedMetadata = payload.metadata
-                                        with(scope) { createHandle() }.also { resolvedValue = it }
+                                        createHandle().also { resolvedValue = it }
                                     },
                             )
                         source.use {

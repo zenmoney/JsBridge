@@ -8,9 +8,11 @@ actual sealed interface JsDate : JsObject {
     actual fun toMillis(): Long
 }
 
-fun JsScope.JsDate(date: Date): JsDate = JsDate(context, date.time).autoClose()
+context(scope: JsScope)
+fun JsDate(date: Date): JsDate = JsDate(scope.context, date.time).autoClose()
 
-fun JsScope.JsDate(date: ZonedDateTime): JsDate = JsDate(context, date.toInstant().toEpochMilli()).autoClose()
+context(scope: JsScope)
+fun JsDate(date: ZonedDateTime): JsDate = JsDate(scope.context, date.toInstant().toEpochMilli()).autoClose()
 
 internal class JsDateImpl(
     context: JsContext,

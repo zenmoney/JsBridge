@@ -1,5 +1,10 @@
 package app.zenmoney.jsbridge
 
+/**
+ * Owns JavaScript wrappers until closed. Operations may borrow values from other scopes in the same [context].
+ * [autoClose] adopts a wrapper from the context's lifetime; [escape] returns it to that lifetime.
+ * Context singletons (`null`, `undefined`, and `globalThis`) always remain owned by the context.
+ */
 open class JsScope internal constructor(
     values: ArrayList<AutoCloseable>? = null,
 ) : JsScopeItem(),
@@ -33,37 +38,6 @@ open class JsScope internal constructor(
     }
 
     fun <T : Collection<JsValue>> escape(values: T) = values.forEach { escape(it) }
-
-    fun <T : JsValue> T.autoClose(): T = this.also { autoClose(it) }
-
-    fun <T : Collection<JsValue>> T.autoClose(): T = this.also { autoClose(it) }
-
-    @Throws(JsException::class)
-    fun eval(script: String): JsValue = context.evaluateScript(script).autoClose()
-
-    operator fun JsArray.get(index: Int): JsValue = getValue(index).autoClose()
-
-    operator fun JsObject.get(key: String): JsValue = getValue(key).autoClose()
-
-    @Throws(JsException::class)
-    operator fun JsFunction.invoke(
-        args: List<JsValue> = emptyList(),
-        thiz: JsValue = context.globalThis,
-    ): JsValue = call(args, thiz).autoClose()
-
-    @Throws(JsException::class)
-    operator fun JsFunction.invoke(
-        vararg args: JsValue,
-        thiz: JsValue = context.globalThis,
-    ): JsValue = call(args.asList(), thiz).autoClose()
-
-    @Throws(JsException::class)
-    fun JsFunction.invokeAsConstructor(args: List<JsValue> = emptyList()): JsValue = callAsConstructor(args).autoClose()
-
-    @Throws(JsException::class)
-    fun JsFunction.invokeAsConstructor(vararg args: JsValue): JsValue = callAsConstructor(args.asList()).autoClose()
-
-    suspend fun JsValue.await(): JsValue = awaitInScope(this@JsScope)
 
     operator fun contains(value: JsValue): Boolean = values?.getOrNull(value.core.indexInScope) === value
 
@@ -119,6 +93,10 @@ inline fun <T> jsScoped(
     block: JsScope.() -> T,
 ) = JsScope(context).use(block)
 
+internal fun JsScope.requireSameContext(value: JsValue) {
+    require(context === value.context) { "JsValue belongs to another JsContext" }
+}
+
 private fun Any.asScopeItem(): JsScopeItem =
     when (this) {
         is JsValue -> core
@@ -131,7 +109,12 @@ sealed class JsScopeItem {
     internal var indexInScope: Int = -1
 }
 
-fun JsScope.evalBlockScoped(
+@Throws(JsException::class)
+context(scope: JsScope)
+fun eval(script: String): JsValue = scope.context.evaluateScript(script).autoClose()
+
+context(scope: JsScope)
+fun evalBlockScoped(
     script: String,
     vararg bindings: Pair<String, JsValue>,
 ): JsValue {
@@ -139,7 +122,7 @@ fun JsScope.evalBlockScoped(
     s.append("{\n")
     for (placeholder in bindings) {
         val globalVarName = "__appZenmoneyEval${placeholder.first}"
-        context.globalThis[globalVarName] = placeholder.second
+        scope.context.globalThis[globalVarName] = placeholder.second
         s.append(
             """
             const ${placeholder.first} = $globalVarName;

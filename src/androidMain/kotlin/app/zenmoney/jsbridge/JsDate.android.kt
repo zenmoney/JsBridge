@@ -7,7 +7,8 @@ actual sealed interface JsDate : JsObject {
     actual fun toMillis(): Long
 }
 
-fun JsScope.JsDate(date: Date): JsDate = JsDate(date.time)
+context(scope: JsScope)
+fun JsDate(date: Date): JsDate = JsDate(date.time)
 
 internal class JsDateImpl(
     context: JsContext,

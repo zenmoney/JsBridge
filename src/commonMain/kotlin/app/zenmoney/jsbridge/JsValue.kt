@@ -39,9 +39,24 @@ internal fun JsValue.isSingleton(): Boolean {
     return this === context.globalThis || this === context.NULL || this === context.UNDEFINED
 }
 
+/**
+ * Creates an independently owned wrapper in [scope] without changing [value]'s ownership.
+ * Both must belong to the same context. Context singletons are returned unchanged.
+ */
 @Suppress("FunctionName")
-fun <T : JsValue> JsScope.JsValueAlias(value: T): T = context.createValueAlias(value).autoClose()
+context(scope: JsScope)
+fun <T : JsValue> JsValueAlias(value: T): T {
+    scope.requireSameContext(value)
+    return scope.context.createValueAlias(value).autoClose()
+}
 
+context(scope: JsScope)
+fun <T : JsValue> T.autoClose(): T = also { scope.autoClose(it) }
+
+context(scope: JsScope)
+fun <T : Collection<JsValue>> T.autoClose(): T = also { scope.autoClose(it) }
+
+/** Moves this wrapper from its owning scope to its context's lifetime, without creating an alias. */
 fun <T : JsValue> T.escape(): T = also { core.scope?.escape(it) }
 
 fun <T : Collection<JsValue>> T.escape(): T = also { forEach { value -> value.escape() } }

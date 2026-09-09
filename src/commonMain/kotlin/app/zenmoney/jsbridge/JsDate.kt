@@ -9,4 +9,5 @@ internal fun JsDate(
     millis: Long,
 ): JsDate = context.createDate(millis)
 
-fun JsScope.JsDate(millis: Long): JsDate = JsDate(context, millis).autoClose()
+context(scope: JsScope)
+fun JsDate(millis: Long): JsDate = JsDate(scope.context, millis).autoClose()

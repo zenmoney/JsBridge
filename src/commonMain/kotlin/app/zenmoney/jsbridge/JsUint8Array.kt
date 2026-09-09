@@ -11,4 +11,5 @@ internal fun JsUint8Array(
     value: ByteArray,
 ): JsUint8Array = context.createUint8Array(value)
 
-fun JsScope.JsUint8Array(value: ByteArray): JsUint8Array = JsUint8Array(context, value).autoClose()
+context(scope: JsScope)
+fun JsUint8Array(value: ByteArray): JsUint8Array = JsUint8Array(scope.context, value).autoClose()

@@ -35,4 +35,37 @@ internal fun JsFunction(
     value: JsFunctionScope.(args: List<JsValue>) -> JsValue,
 ): JsFunction = context.createFunction(value)
 
-fun JsScope.JsFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction = JsFunction(context, value).autoClose()
+/**
+ * Creates a function that passes the callback's result to JavaScript before closing the callback's scope.
+ * Returning a wrapper owned by another scope leaves its lifetime unchanged.
+ */
+context(scope: JsScope)
+fun JsFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction = JsFunction(scope.context, value).autoClose()
+
+@Throws(JsException::class)
+context(scope: JsScope)
+operator fun JsFunction.invoke(
+    args: List<JsValue> = emptyList(),
+    thiz: JsValue = scope.context.globalThis,
+): JsValue {
+    scope.requireSameContext(this)
+    return call(args, thiz).autoClose()
+}
+
+@Throws(JsException::class)
+context(scope: JsScope)
+operator fun JsFunction.invoke(
+    vararg args: JsValue,
+    thiz: JsValue = scope.context.globalThis,
+): JsValue = invoke(args.asList(), thiz)
+
+@Throws(JsException::class)
+context(scope: JsScope)
+fun JsFunction.invokeAsConstructor(args: List<JsValue> = emptyList()): JsValue {
+    scope.requireSameContext(this)
+    return callAsConstructor(args).autoClose()
+}
+
+@Throws(JsException::class)
+context(scope: JsScope)
+fun JsFunction.invokeAsConstructor(vararg args: JsValue): JsValue = invokeAsConstructor(args.asList())

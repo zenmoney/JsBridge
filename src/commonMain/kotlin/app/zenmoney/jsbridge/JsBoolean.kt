@@ -18,6 +18,8 @@ internal fun JsBooleanObject(
     value: Boolean,
 ): JsBooleanObject = context.createBooleanObject(value)
 
-fun JsScope.JsBoolean(value: Boolean): JsBoolean = JsBoolean(context, value).autoClose()
+context(scope: JsScope)
+fun JsBoolean(value: Boolean): JsBoolean = JsBoolean(scope.context, value).autoClose()
 
-fun JsScope.JsBooleanObject(value: Boolean): JsBooleanObject = JsBooleanObject(context, value).autoClose()
+context(scope: JsScope)
+fun JsBooleanObject(value: Boolean): JsBooleanObject = JsBooleanObject(scope.context, value).autoClose()

@@ -18,12 +18,13 @@ internal fun JsPromise(
     ) -> Unit,
 ): JsPromise = context.createPromise(executor)
 
-fun JsScope.JsPromise(
+context(scope: JsScope)
+fun JsPromise(
     executor: JsScope.(
         resolve: JsFunction,
         reject: JsFunction,
     ) -> Unit,
-): JsPromise = JsPromise(context, executor).autoClose()
+): JsPromise = JsPromise(scope.context, executor).autoClose()
 
 private fun JsEventLoop?.checkNotNull(): JsEventLoop = checkNotNull(this) { "JsContext has no event loop attached" }
 
@@ -37,10 +38,16 @@ internal inline fun <T> jsPromiseScoped(
     block: JsPromiseScope.() -> T,
 ): T = JsPromiseScope(context).use(block)
 
-fun JsScope.JsPromise(
+/**
+ * Creates a promise and passes [block]'s result to its JavaScript resolve function before closing the block's scope.
+ * Returning a wrapper owned by another scope leaves its lifetime unchanged.
+ */
+context(scope: JsScope)
+fun JsPromise(
     start: CoroutineStart = CoroutineStart.DEFAULT,
     block: suspend JsPromiseScope.() -> JsValue,
 ): JsPromise {
+    val context = scope.context
     val eventLoop = context.core.eventLoop.checkNotNull()
     lateinit var resolve: JsFunction
     lateinit var reject: JsFunction
@@ -49,7 +56,6 @@ fun JsScope.JsPromise(
             resolve = res.escape()
             reject = rej.escape()
         }
-    val context = context
     eventLoop
         .launch(start = start) {
             jsPromiseScoped(context) {
@@ -57,7 +63,7 @@ fun JsScope.JsPromise(
                 autoClose(reject)
                 val value =
                     try {
-                        block().autoClose()
+                        block()
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -71,6 +77,12 @@ fun JsScope.JsPromise(
             reject.close()
         }
     return promise
+}
+
+context(scope: JsScope)
+suspend fun JsValue.await(): JsValue {
+    scope.requireSameContext(this)
+    return awaitInScope(scope)
 }
 
 internal suspend fun JsValue.awaitInScope(scope: JsScope): JsValue =

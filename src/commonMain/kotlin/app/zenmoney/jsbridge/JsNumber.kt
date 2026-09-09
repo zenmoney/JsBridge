@@ -18,6 +18,8 @@ internal fun JsNumberObject(
     value: Number,
 ): JsNumberObject = context.createNumberObject(value)
 
-fun JsScope.JsNumber(value: Number): JsNumber = JsNumber(context, value).autoClose()
+context(scope: JsScope)
+fun JsNumber(value: Number): JsNumber = JsNumber(scope.context, value).autoClose()
 
-fun JsScope.JsNumberObject(value: Number): JsNumberObject = JsNumberObject(context, value).autoClose()
+context(scope: JsScope)
+fun JsNumberObject(value: Number): JsNumberObject = JsNumberObject(scope.context, value).autoClose()

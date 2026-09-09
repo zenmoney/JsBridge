@@ -15,4 +15,5 @@ internal fun JsError(
     exception: Throwable,
 ): JsObject = context.createError(exception)
 
-fun JsScope.JsObject(exception: Throwable): JsObject = JsError(context, exception).autoClose()
+context(scope: JsScope)
+fun JsObject(exception: Throwable): JsObject = JsError(scope.context, exception).autoClose()

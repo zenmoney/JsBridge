@@ -2,4 +2,5 @@ package app.zenmoney.jsbridge
 
 expect sealed interface JsUndefined : JsValue
 
-fun JsScope.JsUndefined(): JsUndefined = context.UNDEFINED
+context(scope: JsScope)
+fun JsUndefined(): JsUndefined = scope.context.UNDEFINED

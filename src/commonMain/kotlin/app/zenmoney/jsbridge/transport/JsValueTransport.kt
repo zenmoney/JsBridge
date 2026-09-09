@@ -3,6 +3,7 @@ package app.zenmoney.jsbridge.transport
 import app.zenmoney.jsbridge.JsContext
 import app.zenmoney.jsbridge.JsScope
 import app.zenmoney.jsbridge.JsValue
+import app.zenmoney.jsbridge.get
 import app.zenmoney.jsbridge.jsScoped
 import app.zenmoney.jsbridge.serialization.ExpressionValueCodec
 import app.zenmoney.jsbridge.serialization.JsValueCodec
@@ -20,10 +21,8 @@ import app.zenmoney.jsbridge.serialization.JsValueWire
  */
 fun interface JsValueTransportReferenceValueResolver<in P : Any> : AutoCloseable {
     /** [scope] owns resolver temporaries and is closed before [commit] or [rollback]. */
-    fun resolve(
-        scope: JsScope,
-        payload: P,
-    ): JsValue
+    context(scope: JsScope)
+    fun resolve(payload: P): JsValue
 
     fun begin(payloadCount: Int) {}
 
@@ -252,7 +251,7 @@ class JsValueTransportDestination<P : Any>(
                                 checkNotNull(resolver) {
                                     "JsValueTransportDestination has no reference-value resolver"
                                 }
-                            val resolvedValue = configuredResolver.resolve(this, payload)
+                            val resolvedValue = configuredResolver.resolve(payload)
                             require(resolvedValue.context === context) {
                                 "JsValueTransportReferenceValueResolver returned a JsValue from another JsContext"
                             }

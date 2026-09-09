@@ -496,7 +496,7 @@ class JsEventLoop(
                             if (timerIdForTick != null) {
                                 tick(JsNumber(timerIdForTick))
                             } else {
-                                tick()
+                                tick.invoke()
                             }.boolean
                         }
                     if (timerIdForTick != null) {

@@ -7,6 +7,8 @@ import app.zenmoney.jsbridge.JsString
 import app.zenmoney.jsbridge.JsValue
 import app.zenmoney.jsbridge.boolean
 import app.zenmoney.jsbridge.escape
+import app.zenmoney.jsbridge.eval
+import app.zenmoney.jsbridge.get
 import app.zenmoney.jsbridge.isClosed
 import app.zenmoney.jsbridge.jsScoped
 import kotlin.test.Test
