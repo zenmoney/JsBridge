@@ -364,6 +364,49 @@ class JsWebViewRuntimeTest {
         )
     }
 
+    @Test
+    fun scalarTagsIgnoreInheritedToJsonHooks() {
+        assertEquals(
+            "ok",
+            evaluateRuntime(
+                """
+                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const scripts = ["undefined", "NaN", "Infinity", "-Infinity", "-0", "123n"];
+                const expected = ['["u"]', '["n","nan"]', '["n","+inf"]', '["n","-inf"]', '["n","-0"]', '["i","123"]'];
+                bridge.dispatch(["y+", ["ui8", 1, "AID/"]], 1);
+                const bytesHandle = messages.pop()[2][1] % 4294967296;
+                for (const prototype of [Object.prototype, Array.prototype]) {
+                    const original = Object.getOwnPropertyDescriptor(prototype, "toJSON");
+                    let hookCalls = 0;
+                    Object.defineProperty(prototype, "toJSON", {
+                        configurable: true,
+                        get() { hookCalls++; throw new Error("inherited toJSON must not run"); },
+                    });
+                    const responses = [];
+                    try {
+                        for (let index = 0; index < scripts.length; index++) {
+                            bridge.dispatch(["e", scripts[index]], index + 2);
+                            responses.push(messages.pop());
+                        }
+                        bridge.dispatch(["y?", bytesHandle], 10);
+                        responses.push(messages.pop());
+                    } finally {
+                        if (original) Object.defineProperty(prototype, "toJSON", original);
+                        else delete prototype.toJSON;
+                    }
+                    check(hookCalls === 0, "protocol serialization must not inspect inherited toJSON");
+                    for (let index = 0; index < expected.length; index++) {
+                        check(responses[index][0] === "r", "scalar evaluation must succeed");
+                        check(JSON.stringify(responses[index][2]) === expected[index], "preserve scalar tag " + scripts[index]);
+                    }
+                    check(JSON.stringify(responses[expected.length][2]) === '["ui8",1,"AID/"]', "preserve binary tag");
+                }
+                return "ok";
+                """.trimIndent(),
+            ),
+        )
+    }
+
     private fun evaluateRuntime(
         body: String,
         inspectHandles: Boolean = false,

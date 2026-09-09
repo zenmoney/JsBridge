@@ -360,9 +360,28 @@ internal val expressionValueCoreCodecFactorySource: String =
         }
 
         function stringifyJson(value) {
-            const result = jsonStringify(value);
-            if (typeof result !== "string") throw new Error("Expression value is not JSON-compatible");
+            // Core tags contain only scalar fields. Serializing the array itself would invoke an
+            // inherited toJSON hook installed by evaluated code, even with a captured JSON.stringify.
+            let result;
+            if (isArray(value)) {
+                result = "[";
+                for (let index = 0; index < value.length; index++) {
+                    if (index !== 0) result += ",";
+                    result += stringifyJsonScalar(value[index]);
+                }
+                result += "]";
+            } else {
+                result = stringifyJsonScalar(value);
+            }
             return escapeJavascriptLineSeparators(result);
+        }
+
+        function stringifyJsonScalar(value) {
+            if (value === null || typeof value === "boolean" || typeof value === "string" ||
+                typeof value === "number" && isFiniteNumber(value)) {
+                return jsonStringify(value);
+            }
+            throw new Error("Expression value is not JSON-compatible");
         }
 
         function encode(value, graphContext) {
@@ -1221,7 +1240,6 @@ internal val expressionValueCodecFactorySource: String =
         const SetConstructor = globalThis.Set;
         const StringConstructor = globalThis.String;
         const bindCall = Function.prototype.call.bind(Function.prototype.call);
-        const arrayConcat = bindCall.bind(undefined, ArrayConstructor.prototype.concat);
         const arraySlice = bindCall.bind(undefined, ArrayConstructor.prototype.slice);
         const mapGet = bindCall.bind(undefined, MapConstructor.prototype.get);
         const mapHas = bindCall.bind(undefined, MapConstructor.prototype.has);
@@ -1282,6 +1300,10 @@ internal val expressionValueCodecFactorySource: String =
                 hasReferenceCodec,
                 referenceValues,
             );
+            // Consumer fields remain mutable while parent codecs are assembling the wire. Validate
+            // their final state once, after every encoder has returned, instead of rescanning each
+            // child's entire subtree at every ancestor or caching validation of mutable objects.
+            if (codecs.length !== 0) validateProtocolFields(wireNode);
             const wire = stringifyExpression(wireNode);
             return {
                 wire: coreCodec.escapeJavascriptLineSeparators(wire),
@@ -1339,8 +1361,16 @@ internal val expressionValueCodecFactorySource: String =
                 };
                 const fields = bindCall(codec.encode, codec.receiver, value, encodeContext);
                 if (!isArray(fields)) throw new Error("Consumer codec " + codec.tag + " must return protocol fields");
-                validateProtocolFields(fields, graph, false);
-                return arrayConcat([codec.tag, id], fields);
+                // Validate the returned container before copying it: concat would invoke index
+                // getters and discard extra properties or non-standard descriptors before final validation.
+                const length = requireProtocolArrayLength(fields);
+                const node = new ArrayConstructor(length + 2);
+                node[0] = codec.tag;
+                node[1] = id;
+                for (let index = 0; index < length; index++) {
+                    node[index + 2] = requirePlainDataDescriptor(fields, StringConstructor(index)).value;
+                }
+                return node;
             }
 
             const encoded = coreCodec.encode(
@@ -1376,6 +1406,7 @@ internal val expressionValueCodecFactorySource: String =
         }
 
         function decodeNode(node, graph, resolvedReferenceValues, codecs) {
+            node = materializeProtocolNode(node, graph);
             if (isArray(node) && node[0] === coreCodec.tags.object && node.length === 3) {
                 normalizeWireRecord(node[2], graph);
             }
@@ -1501,8 +1532,7 @@ internal val expressionValueCodecFactorySource: String =
             if (node.length < 2) throw new Error("Invalid consumer node " + node[0]);
             const id = node[1];
             coreCodec.requireUnusedGraphId(id, graph);
-            const fields = arraySlice(node, 2);
-            validateProtocolFields(fields, graph, true);
+            const fields = snapshotProtocolFields(arraySlice(node, 2), graph);
 
             const blockedContext = {
                 decodeChild: () => {
@@ -1518,6 +1548,101 @@ internal val expressionValueCodecFactorySource: String =
             };
             bindCall(codec.populate, codec.receiver, result, fields, decodeContext);
             return result;
+        }
+
+        function snapshotProtocolFields(fields, graph) {
+            if (graph.protocolSnapshots === undefined) {
+                graph.protocolSnapshots = new SetConstructor();
+                graph.protocolSourceValues = new MapConstructor();
+                graph.materializedProtocolValues = new MapConstructor();
+            }
+            // Only our detached, deeply frozen snapshots are reusable. Never cache validation of
+            // caller-owned fields: another codec can still hold and mutate those original objects.
+            return snapshotProtocolField(fields, new SetConstructor(), new MapConstructor(), graph);
+        }
+
+        function snapshotProtocolField(value, active, copies, graph) {
+            if (validateProtocolScalar(value)) return value;
+            if (setHas(graph.protocolSnapshots, value)) return value;
+            if (setHas(active, value)) throw new Error("Codec protocol metadata must not contain cycles");
+            if (mapHas(copies, value)) return mapGet(copies, value);
+            setAdd(active, value);
+
+            let result;
+            if (isArray(value)) {
+                const length = requireProtocolArrayLength(value);
+                result = new ArrayConstructor(length);
+                mapSet(copies, value, result);
+                for (let index = 0; index < length; index++) {
+                    const descriptor = requirePlainDataDescriptor(value, StringConstructor(index));
+                    result[index] = snapshotProtocolField(descriptor.value, active, copies, graph);
+                }
+            } else {
+                if (getPrototypeOf(value) !== objectPrototype) throw new Error("Codec metadata record must be plain");
+                result = {};
+                mapSet(copies, value, result);
+                const normalized = setHas(graph.normalizedWireRecords, value);
+                const keys = ownKeys(value);
+                const decodedKeys = new SetConstructor();
+                for (let index = 0; index < keys.length; index++) {
+                    const key = keys[index];
+                    if (typeof key !== "string") throw new Error("Codec metadata record has a Symbol key");
+                    const decodedKey = normalized ? key : decodeWireKey(key);
+                    if (setHas(decodedKeys, decodedKey)) throw new Error("Duplicate decoded expression key " + decodedKey);
+                    setAdd(decodedKeys, decodedKey);
+                    const descriptor = requirePlainDataDescriptor(value, key);
+                    defineProperty(result, decodedKey, {
+                        value: snapshotProtocolField(descriptor.value, active, copies, graph),
+                        writable: true,
+                        enumerable: true,
+                        configurable: true,
+                    });
+                }
+                setAdd(graph.normalizedWireRecords, result);
+            }
+            setDelete(active, value);
+            freeze(result);
+            setAdd(graph.protocolSnapshots, result);
+            mapSet(graph.protocolSourceValues, result, value);
+            return result;
+        }
+
+        function materializeProtocolNode(node, graph) {
+            if (graph.protocolSnapshots === undefined || !isArray(node) || node.length !== 3) return node;
+            const payload = node[2];
+            const objectPayload = node[0] === coreCodec.tags.object && payload !== null &&
+                typeof payload === "object" && !isArray(payload);
+            const arrayPayload = node[0] === coreCodec.tags.array && isArray(payload);
+            if (!objectPayload && !arrayPayload) return node;
+            const snapshot = setHas(graph.protocolSnapshots, payload);
+            const source = snapshot ? mapGet(graph.protocolSourceValues, payload) : payload;
+
+            // Built-in decoders populate their payload in place. Give a snapshotted payload its own
+            // mutable value only when decoded, while consumers continue seeing immutable wire fields.
+            // Reusing this copy also preserves rejection of one payload registered under two graph ids.
+            let result = mapGet(graph.materializedProtocolValues, source);
+            if (result === undefined && !snapshot) return node;
+            if (result === undefined && mapHas(graph.decodedIdentities, source)) result = source;
+            if (result === undefined) {
+                result = arrayPayload ? arraySlice(payload) : {};
+                if (objectPayload) {
+                    const keys = ownKeys(payload);
+                    for (let index = 0; index < keys.length; index++) {
+                        const key = keys[index];
+                        defineProperty(result, key, {
+                            value: getOwnPropertyDescriptor(payload, key).value,
+                            writable: true,
+                            enumerable: true,
+                            configurable: true,
+                        });
+                    }
+                    setAdd(graph.normalizedWireRecords, result);
+                }
+                mapSet(graph.materializedProtocolValues, source, result);
+            }
+            const materialized = arraySlice(node);
+            materialized[2] = result;
+            return materialized;
         }
 
         function createSourceCodecRegistry(configuration) {
@@ -1583,46 +1708,55 @@ internal val expressionValueCodecFactorySource: String =
             }
         }
 
-        function validateProtocolFields(fields, graph, normalizeWireKeys) {
+        function validateProtocolFields(fields) {
             const active = new SetConstructor();
-            validateProtocolField(fields, active, graph, normalizeWireKeys);
+            validateProtocolField(fields, active);
         }
 
-        function validateProtocolField(value, active, graph, normalizeWireKeys) {
-            if (value === null || typeof value === "boolean" || typeof value === "string") return;
+        function validateProtocolScalar(value) {
+            if (value === null || typeof value === "boolean" || typeof value === "string") return true;
             if (typeof value === "number") {
                 if (!isFiniteNumber(value) || isSameValue(value, -0)) {
                     throw new Error("Codec metadata number must be finite and must not be negative zero");
                 }
-                return;
+                return true;
             }
             if (typeof value !== "object") throw new Error("Codec protocol field is not JSON-compatible");
+            return false;
+        }
+
+        function requireProtocolArrayLength(value) {
+            if (getPrototypeOf(value) !== arrayPrototype) throw new Error("Codec metadata array must be plain");
+            const lengthDescriptor = getOwnPropertyDescriptor(value, "length");
+            if (!lengthDescriptor ||
+                lengthDescriptor.writable !== true ||
+                lengthDescriptor.enumerable !== false ||
+                lengthDescriptor.configurable !== false) {
+                throw new Error("Codec metadata array has a non-standard length descriptor");
+            }
+            const length = lengthDescriptor.value;
+            if (ownKeys(value).length !== length + 1) throw new Error("Codec metadata array must be dense without extra properties");
+            return length;
+        }
+
+        function validateProtocolField(value, active) {
+            if (validateProtocolScalar(value)) return;
             if (setHas(active, value)) throw new Error("Codec protocol metadata must not contain cycles");
             setAdd(active, value);
             if (isArray(value)) {
-                if (getPrototypeOf(value) !== arrayPrototype) throw new Error("Codec metadata array must be plain");
-                const lengthDescriptor = getOwnPropertyDescriptor(value, "length");
-                if (!lengthDescriptor ||
-                    lengthDescriptor.writable !== true ||
-                    lengthDescriptor.enumerable !== false ||
-                    lengthDescriptor.configurable !== false) {
-                    throw new Error("Codec metadata array has a non-standard length descriptor");
-                }
-                const keys = ownKeys(value);
-                if (keys.length !== value.length + 1) throw new Error("Codec metadata array must be dense without extra properties");
-                for (let itemIndex = 0; itemIndex < value.length; itemIndex++) {
+                const length = requireProtocolArrayLength(value);
+                for (let itemIndex = 0; itemIndex < length; itemIndex++) {
                     const descriptor = requirePlainDataDescriptor(value, StringConstructor(itemIndex));
-                    validateProtocolField(descriptor.value, active, graph, normalizeWireKeys);
+                    validateProtocolField(descriptor.value, active);
                 }
             } else {
                 if (getPrototypeOf(value) !== objectPrototype) throw new Error("Codec metadata record must be plain");
-                if (normalizeWireKeys) normalizeWireRecord(value, graph);
                 const keys = ownKeys(value);
                 for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
                     const key = keys[keyIndex];
                     if (typeof key !== "string") throw new Error("Codec metadata record has a Symbol key");
                     const descriptor = requirePlainDataDescriptor(value, key);
-                    validateProtocolField(descriptor.value, active, graph, normalizeWireKeys);
+                    validateProtocolField(descriptor.value, active);
                 }
             }
             setDelete(active, value);
@@ -1982,6 +2116,11 @@ object ExpressionValueCodec : JsValueCodec {
     /**
      * Creates an expression codec whose JavaScript configuration is created once inside each construction
      * scope. The configuration is codec-owned and cannot escape into transport orchestration.
+     *
+     * Source consumer codecs may assemble mutable protocol fields; their final state is validated after encoding.
+     * Destination consumer codecs receive detached, deeply frozen protocol fields in `allocate` and `populate`.
+     * Treat those fields as read-only and use `decodeChild` to materialize encoded children; decoded objects remain
+     * mutable. A codec that needs writable metadata must copy it into its own result or working storage.
      */
     operator fun invoke(createConfiguration: JsScope.() -> JsValue): JsValueCodec =
         object : JsValueCodec {
