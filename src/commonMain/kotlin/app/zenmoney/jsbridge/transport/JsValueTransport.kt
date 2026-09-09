@@ -19,6 +19,7 @@ import app.zenmoney.jsbridge.serialization.JsValueWire
  * payload. The destination owns the resolver and closes it together with its decoder.
  */
 fun interface JsValueTransportReferenceValueResolver<in P : Any> : AutoCloseable {
+    /** [scope] owns resolver temporaries and is closed before [commit] or [rollback]. */
     fun resolve(
         scope: JsScope,
         payload: P,
@@ -226,10 +227,17 @@ class JsValueTransportDestination<P : Any>(
     private val decoder = createDecoder(context, codec)
     private val resolvedPayloadValues = arrayListOf<JsValue>()
 
-    /** Resolves [packet] in this context and decodes it without taking ownership of its payloads. */
+    /**
+     * Resolves [packet] without taking ownership of its payloads and returns a value owned by [scope].
+     * [scope] must belong to this destination's [context].
+     */
+    context(scope: JsScope)
     fun decode(packet: JsValueTransportPacket<P>): JsValue {
         check(!isClosed) { "JsValueTransportDestination is closed" }
         check(!isDecoding) { "JsValueTransportDestination is already decoding another packet" }
+        require(scope.context === context) {
+            "JsValueTransportDestination cannot decode in a JsScope from another JsContext"
+        }
         return packet.consume { wire, payloads ->
             isDecoding = true
             val resolver = referenceValueResolver
@@ -256,11 +264,12 @@ class JsValueTransportDestination<P : Any>(
                         require(decodedValue.context === context) {
                             "JsValueDecoder returned a JsValue from another JsContext"
                         }
-                        decodedValue
+                        decodedValue.also { escape(it) }
                     }
                 resolver?.commit()
+                val decodedValue = checkNotNull(result).also { scope.autoClose(it) }
                 committed = true
-                checkNotNull(result)
+                decodedValue
             } finally {
                 try {
                     if (!committed) {

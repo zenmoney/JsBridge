@@ -35,7 +35,11 @@ interface JsValueEncoder : AutoCloseable {
 interface JsValueDecoder : AutoCloseable {
     val context: JsContext
 
-    /** Returns a caller-owned value in [context]. */
+    /**
+     * Returns a value owned by [scope], which must belong to this decoder's [context].
+     * [resolvedReferenceValues] are borrowed and retain their existing ownership.
+     */
+    context(scope: JsScope)
     fun decode(
         wire: JsValueWire,
         resolvedReferenceValues: List<JsValue>,

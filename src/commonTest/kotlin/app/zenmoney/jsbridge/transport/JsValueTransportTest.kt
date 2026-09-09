@@ -4,21 +4,27 @@ import app.zenmoney.jsbridge.JsArray
 import app.zenmoney.jsbridge.JsBoolean
 import app.zenmoney.jsbridge.JsContext
 import app.zenmoney.jsbridge.JsFunction
+import app.zenmoney.jsbridge.JsScope
 import app.zenmoney.jsbridge.JsString
 import app.zenmoney.jsbridge.JsValue
 import app.zenmoney.jsbridge.boolean
 import app.zenmoney.jsbridge.escape
 import app.zenmoney.jsbridge.isClosed
+import app.zenmoney.jsbridge.jsScoped
 import app.zenmoney.jsbridge.map
 import app.zenmoney.jsbridge.serialization.ExpressionValueCodec
 import app.zenmoney.jsbridge.serialization.JsValueCodec
 import app.zenmoney.jsbridge.serialization.JsValueDecoder
 import app.zenmoney.jsbridge.serialization.JsValueEncoder
+import app.zenmoney.jsbridge.serialization.JsValueWire
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 class JsValueTransportTest {
     @Test
@@ -50,9 +56,16 @@ class JsValueTransportTest {
                             source.encode(value, packet)
                         }
                         try {
-                            destination.decode(packet).use { value ->
-                                assertEquals("custom codec", assertIs<JsString>(value).toString())
-                            }
+                            val decoded =
+                                JsScope(destinationContext).use { jsScope ->
+                                    with(jsScope) {
+                                        destination.decode(packet).also { value ->
+                                            assertTrue(value in this)
+                                            assertEquals("custom codec", assertIs<JsString>(value).toString())
+                                        }
+                                    }
+                                }
+                            assertTrue(decoded.isClosed)
                         } finally {
                             packet.reset()
                         }
@@ -89,7 +102,8 @@ class JsValueTransportTest {
                             ).use { sourceValue ->
                                 transportSource.encode(sourceValue, packet)
                                 try {
-                                    transportDestination.decode(packet).use { destinationValue ->
+                                    jsScoped(destination) {
+                                        val destinationValue = transportDestination.decode(packet)
                                         destination.globalThis["transported"] = destinationValue
                                         assertEquals(
                                             listOf(true, true, true, true, true, true),
@@ -140,7 +154,8 @@ class JsValueTransportTest {
                                 source.encode(value, packet)
                             }
                             try {
-                                destination.decode(packet).use { value ->
+                                jsScoped(destinationContext) {
+                                    val value = destination.decode(packet)
                                     assertEquals(expected, assertIs<JsString>(value).toString())
                                 }
                             } finally {
@@ -148,6 +163,143 @@ class JsValueTransportTest {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun callerCanEscapeDecodedValueBeyondScopeAndDestinationLifetime() {
+        JsContext().use { context ->
+            JsValueTransportSource<Unit>(context).use { source ->
+                JsValueTransportPacket<Unit>().use { packet ->
+                    context.evaluateScript("'escaped'").use { source.encode(it, packet) }
+                    val decoded =
+                        JsValueTransportDestination<Unit>(context).use { destination ->
+                            jsScoped(context) {
+                                destination.decode(packet).escape()
+                            }
+                        }
+                    decoded.use {
+                        assertFalse(it.isClosed)
+                        assertEquals("escaped", assertIs<JsString>(it).toString())
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun rejectsAnotherContextWithoutConsumingPacket() {
+        JsContext().use { context ->
+            JsContext().use { otherContext ->
+                JsValueTransportSource<Unit>(context).use { source ->
+                    JsValueTransportDestination<Unit>(context).use { destination ->
+                        JsValueTransportPacket<Unit>().use { packet ->
+                            context.evaluateScript("'ready'").use { source.encode(it, packet) }
+                            jsScoped(otherContext) {
+                                assertFailsWith<IllegalArgumentException> {
+                                    destination.decode(packet)
+                                }
+                            }
+                            jsScoped(context) {
+                                val decoded = destination.decode(packet)
+                                assertTrue(decoded in this)
+                                assertEquals("ready", assertIs<JsString>(decoded).toString())
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun commitFailureClosesResultAndRollsBackBeforeCallerScopeCloses() {
+        JsContext().use { context ->
+            lateinit var decoded: JsValue
+            lateinit var resolved: JsValue
+            lateinit var targetScope: JsScope
+            lateinit var resolverScope: JsScope
+            var rollbackCount = 0
+            var failCommit = true
+            val codec =
+                object : JsValueCodec {
+                    override fun createEncoder(context: JsContext): JsValueEncoder = ExpressionValueCodec.createEncoder(context)
+
+                    override fun createDecoder(context: JsContext): JsValueDecoder {
+                        val delegate = ExpressionValueCodec.createDecoder(context)
+                        return object : JsValueDecoder {
+                            override val context: JsContext = delegate.context
+
+                            context(scope: JsScope)
+                            override fun decode(
+                                wire: JsValueWire,
+                                resolvedReferenceValues: List<JsValue>,
+                            ): JsValue {
+                                assertSame(resolverScope, scope)
+                                assertTrue(resolved in scope)
+                                return delegate.decode(wire, resolvedReferenceValues).also {
+                                    assertTrue(it in scope)
+                                    decoded = it
+                                }
+                            }
+
+                            override fun close() = delegate.close()
+                        }
+                    }
+                }
+            val resolver =
+                object : JsValueTransportReferenceValueResolver<String> {
+                    override fun resolve(
+                        scope: JsScope,
+                        payload: String,
+                    ): JsValue {
+                        resolverScope = scope
+                        return scope.eval("({})").also { resolved = it }
+                    }
+
+                    override fun commit() {
+                        assertTrue(resolved.isClosed)
+                        assertFalse(decoded.isClosed)
+                        assertFalse(decoded in targetScope)
+                        if (failCommit) error("commit failed")
+                    }
+
+                    override fun rollback() {
+                        assertTrue(resolved.isClosed)
+                        assertTrue(decoded.isClosed)
+                        rollbackCount++
+                    }
+                }
+            JsValueTransportDestination(context, codec, resolver).use { destination ->
+                JsValueTransportPacket<String>().use { packet ->
+                    jsScoped(context) {
+                        targetScope = this
+                        val unrelated = eval("({})")
+                        for (shouldFail in listOf(true, false)) {
+                            failCommit = shouldFail
+                            packet.populate { payloads ->
+                                payloads.addAll(1) { "borrowed payload" }
+                                JsValueWire("""["x",0]""")
+                            }
+                            if (shouldFail) {
+                                assertFailsWith<IllegalStateException> {
+                                    destination.decode(packet)
+                                }
+                                assertTrue(decoded.isClosed)
+                                assertFalse(decoded in this)
+                            } else {
+                                assertTrue(destination.decode(packet) in this)
+                            }
+                            assertEquals(1, rollbackCount)
+                            assertFalse(unrelated.isClosed)
+                            assertTrue(unrelated in this)
+                            assertEquals("borrowed payload", packet.payload(0))
+                            packet.reset()
+                        }
+                    }
+                    assertTrue(decoded.isClosed)
                 }
             }
         }
@@ -291,13 +443,14 @@ class JsValueTransportTest {
                                 },
                             )
                         var receivedMetadata: String? = null
+                        lateinit var resolvedValue: JsValue
                         val destination =
                             JsValueTransportDestination(
                                 context = destinationContext,
                                 referenceValueResolver =
                                     JsValueTransportReferenceValueResolver<MetadataPayload> { scope, payload ->
                                         receivedMetadata = payload.metadata
-                                        with(scope) { createHandle() }
+                                        with(scope) { createHandle() }.also { resolvedValue = it }
                                     },
                             )
                         source.use {
@@ -306,7 +459,10 @@ class JsValueTransportTest {
                                 sourceContext.evaluateScript("({ __exported: true })").use { value ->
                                     source.encode(value, packet)
                                     try {
-                                        destination.decode(packet).use { handle ->
+                                        jsScoped(destinationContext) {
+                                            val handle = destination.decode(packet)
+                                            assertTrue(handle in this)
+                                            assertTrue(resolvedValue.isClosed)
                                             destinationContext.globalThis["genericPayloadHandle"] = handle
                                             assertEquals("source metadata", receivedMetadata)
                                             assertEquals(

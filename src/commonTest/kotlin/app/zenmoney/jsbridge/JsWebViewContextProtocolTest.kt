@@ -35,11 +35,19 @@ class JsWebViewContextProtocolTest {
 
         ExpressionValueCodec.createDecoder(context).use { decoder ->
             context.createString("external").use { reference ->
-                decoder
-                    .decode(
-                        JsValueWire("""["o",1,{"name":"Ada","external":["x",0]}]"""),
-                        listOf(reference),
-                    ).use { assertIs<JsObject>(it) }
+                val decoded =
+                    jsScoped(context) {
+                        decoder
+                            .decode(
+                                JsValueWire("""["o",1,{"name":"Ada","external":["x",0]}]"""),
+                                listOf(reference),
+                            ).also {
+                                assertIs<JsObject>(it)
+                                assertTrue(it in this)
+                            }
+                    }
+                assertTrue(decoded.isClosed)
+                assertFalse(reference.isClosed)
             }
         }
 

@@ -2052,21 +2052,25 @@ private class ExpressionValueDecoder(
     override val context: JsContext,
     private val decoder: JsFunction,
 ) : JsValueDecoder {
+    context(scope: JsScope)
     override fun decode(
         wire: JsValueWire,
         resolvedReferenceValues: List<JsValue>,
     ): JsValue {
+        require(scope.context === context) {
+            "JsValueDecoder cannot decode in a JsScope from another JsContext"
+        }
         resolvedReferenceValues.forEach {
             require(it.context === context) {
                 "JsValueDecoder cannot resolve a JsValue from another JsContext"
             }
         }
         if (context is JsWebViewContext) {
-            return context.decodeExpressionValue(decoder, wire, resolvedReferenceValues)
+            return context.decodeExpressionValue(decoder, wire, resolvedReferenceValues).also { scope.autoClose(it) }
         }
         return jsScoped(context) {
             decoder(JsString(wire.value), JsArray(resolvedReferenceValues)).escape()
-        }
+        }.also { scope.autoClose(it) }
     }
 
     override fun close() {

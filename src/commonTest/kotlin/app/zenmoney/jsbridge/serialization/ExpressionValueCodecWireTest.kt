@@ -2,16 +2,81 @@ package app.zenmoney.jsbridge.serialization
 
 import app.zenmoney.jsbridge.JsBoolean
 import app.zenmoney.jsbridge.JsContext
+import app.zenmoney.jsbridge.JsScope
 import app.zenmoney.jsbridge.JsString
 import app.zenmoney.jsbridge.JsValue
 import app.zenmoney.jsbridge.boolean
+import app.zenmoney.jsbridge.escape
 import app.zenmoney.jsbridge.isClosed
+import app.zenmoney.jsbridge.jsScoped
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class ExpressionValueCodecWireTest {
+    @Test
+    fun decoderResultBelongsToReceivingScopeAndBorrowsResolvedReferences() {
+        JsContext().use { context ->
+            ExpressionValueCodec.createDecoder(context).use { decoder ->
+                context.evaluateScript("({ replacement: true })").use { replacement ->
+                    val decoded =
+                        JsScope(context).use { jsScope ->
+                            with(jsScope) {
+                                decoder.decode(JsValueWire("""["x",0]"""), listOf(replacement)).also {
+                                    assertTrue(it in this)
+                                    assertFalse(replacement in this)
+                                }
+                            }
+                        }
+                    assertTrue(decoded.isClosed)
+                    assertFalse(replacement.isClosed)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun callerCanEscapeDecodedValueBeyondScopeAndDecoderLifetime() {
+        JsContext().use { context ->
+            val decoded =
+                ExpressionValueCodec.createDecoder(context).use { decoder ->
+                    jsScoped(context) {
+                        decoder.decode(JsValueWire("\"escaped\""), emptyList()).escape()
+                    }
+                }
+            decoded.use {
+                assertFalse(it.isClosed)
+                assertEquals("escaped", assertIs<JsString>(it).toString())
+            }
+        }
+    }
+
+    @Test
+    fun decoderRejectsScopeAndResolvedReferencesFromAnotherContext() {
+        JsContext().use { context ->
+            JsContext().use { otherContext ->
+                ExpressionValueCodec.createDecoder(context).use { decoder ->
+                    jsScoped(otherContext) {
+                        assertFailsWith<IllegalArgumentException> {
+                            decoder.decode(JsValueWire("null"), emptyList())
+                        }
+                    }
+                    otherContext.evaluateScript("({})").use { reference ->
+                        jsScoped(context) {
+                            assertFailsWith<IllegalArgumentException> {
+                                decoder.decode(JsValueWire("""["x",0]"""), listOf(reference))
+                            }
+                        }
+                        assertFalse(reference.isClosed)
+                    }
+                }
+            }
+        }
+    }
+
     @Test
     fun publicCodecOwnsWireAndReferenceTable() {
         JsContext().use { context ->
@@ -33,7 +98,7 @@ class ExpressionValueCodecWireTest {
                                     assertIs<JsBoolean>(context.evaluateScript("source === selected")).boolean,
                                 )
 
-                                decoder.decode(wire, listOf(replacement)).use { decoded ->
+                                decoder.decode(wire, listOf(replacement)).also { decoded ->
                                     context.globalThis["replacement"] = replacement
                                     context.globalThis["decoded"] = decoded
                                     assertEquals(
