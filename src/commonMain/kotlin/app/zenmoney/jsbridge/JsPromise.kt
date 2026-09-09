@@ -85,12 +85,17 @@ suspend fun JsValue.await(): JsValue {
     return awaitInScope(scope)
 }
 
-internal suspend fun JsValue.awaitInScope(scope: JsScope): JsValue =
-    context.core.eventLoop
-        .checkNotNull()
-        .async(start = CoroutineStart.UNDISPATCHED) { runCatching { _awaitInScope(scope) } }
-        .await()
-        .fold({ it }, { throw it })
+internal suspend fun JsValue.awaitInScope(scope: JsScope): JsValue {
+    val waiter =
+        context.core.eventLoop
+            .checkNotNull()
+            .async(start = CoroutineStart.UNDISPATCHED) { runCatching { _awaitInScope(scope) } }
+    return try {
+        waiter.await().fold({ it }, { throw it })
+    } finally {
+        waiter.cancel()
+    }
+}
 
 private fun <T> CancellableContinuation<T>.resumeOnce(result: Result<T>) {
     try {

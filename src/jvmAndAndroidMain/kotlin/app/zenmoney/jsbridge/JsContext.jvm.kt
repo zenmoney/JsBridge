@@ -7,11 +7,10 @@ import com.caoccao.javet.interop.callback.IJavetDirectCallable
 import com.caoccao.javet.interop.callback.JavetCallbackContext
 import com.caoccao.javet.interop.callback.JavetCallbackType
 import com.caoccao.javet.values.V8Value
-import com.caoccao.javet.values.primitive.V8ValueBigInteger
+import com.caoccao.javet.values.primitive.V8ValueBigNumber
 import com.caoccao.javet.values.primitive.V8ValueBoolean
 import com.caoccao.javet.values.primitive.V8ValueDouble
 import com.caoccao.javet.values.primitive.V8ValueInteger
-import com.caoccao.javet.values.primitive.V8ValueLong
 import com.caoccao.javet.values.primitive.V8ValueNull
 import com.caoccao.javet.values.primitive.V8ValueString
 import com.caoccao.javet.values.primitive.V8ValueUndefined
@@ -21,7 +20,6 @@ import com.caoccao.javet.values.reference.V8ValueBooleanObject
 import com.caoccao.javet.values.reference.V8ValueDoubleObject
 import com.caoccao.javet.values.reference.V8ValueFunction
 import com.caoccao.javet.values.reference.V8ValueIntegerObject
-import com.caoccao.javet.values.reference.V8ValueLongObject
 import com.caoccao.javet.values.reference.V8ValueObject
 import com.caoccao.javet.values.reference.V8ValuePromise
 import com.caoccao.javet.values.reference.V8ValueStringObject
@@ -184,10 +182,7 @@ actual class JsEngineContext :
             } catch (e: Exception) {
                 throw JsException(e.message ?: e.toString(), e, emptyMap())
             }
-        throwExceptionIfNeeded {
-            v8Value.closeQuietly()
-        }
-        return createValue(v8Value)
+        return createNativeValue(v8Value) { throwExceptionIfNeeded() }
     }
 
     @Throws(JsException::class)
@@ -207,10 +202,7 @@ actual class JsEngineContext :
                     }
                 },
             )
-        throwExceptionIfNeeded {
-            v8Value.closeQuietly()
-        }
-        return createValue(v8Value)
+        return createNativeValue(v8Value) { throwExceptionIfNeeded() }
     }
 
     @Throws(JsException::class)
@@ -225,7 +217,7 @@ actual class JsEngineContext :
             },
         )
 
-    private inline fun throwExceptionIfNeeded(ifException: () -> Unit) {
+    private fun throwExceptionIfNeeded() {
         jsScoped(this) {
             val arr =
                 createValue(
@@ -235,33 +227,29 @@ actual class JsEngineContext :
             if (hasError is JsBoolean && hasError.toBoolean()) {
                 val error = arr[0]
                 val e = createException(error)
-                ifException()
                 throw e
             }
         }
     }
 
     actual override fun createArray(value: Iterable<JsValue>): JsArray =
-        JsArrayImpl(
-            this,
-            v8Runtime.createV8ValueArray().apply {
-                if (value is List) {
-                    push(*Array(value.size) { (value[it] as JsValueImpl).v8Value })
-                } else {
-                    value.forEach {
-                        push((it as JsValueImpl).v8Value)
-                    }
+        createNativeValue(
+            v8Runtime.createV8ValueArray(),
+            wrap = { JsArrayImpl(this, it).also { registerValue(it) } },
+        ) { array ->
+            if (value is List) {
+                array.push(*Array(value.size) { (value[it] as JsValueImpl).v8Value })
+            } else {
+                value.forEach {
+                    array.push((it as JsValueImpl).v8Value)
                 }
-            },
-        ).also { registerValue(it) }
+            }
+        } as JsArray
 
     actual override fun createBoolean(value: Boolean): JsBoolean = createValue(value) as JsBoolean
 
     actual override fun createBooleanObject(value: Boolean): JsBooleanObject =
-        JsBooleanObjectImpl(
-            this,
-            v8Runtime.createV8ValueBooleanObject(value),
-        ).also { registerValue(it) }
+        createValue(v8Runtime.createV8ValueBooleanObject(value)) as JsBooleanObject
 
     actual override fun createDate(millis: Long): JsDate = createValue(v8Runtime.createV8ValueZonedDateTime(millis)) as JsDate
 
@@ -320,11 +308,7 @@ actual class JsEngineContext :
                     }
                 },
             )
-        return JsFunctionImpl(
-            this,
-            v8Runtime.createV8ValueFunction(callbackContext),
-        ).also {
-            registerValue(it)
+        return (createValue(v8Runtime.createV8ValueFunction(callbackContext)) as JsFunction).also {
             registerCallbackContextHandle(callbackContext.handle)
         }
     }
@@ -332,15 +316,18 @@ actual class JsEngineContext :
     actual override fun createNumber(value: Number): JsNumber = createValue(value) as JsNumber
 
     actual override fun createNumberObject(value: Number): JsNumberObject =
-        when (value) {
-            is Int -> JsNumberObjectImpl(this, v8Runtime.createV8ValueIntegerObject(value))
-            is Long -> JsNumberObjectImpl(this, v8Runtime.createV8ValueLongObject(value))
-            else -> JsNumberObjectImpl(this, v8Runtime.createV8ValueDoubleObject(value.toDouble()))
-        }.also { registerValue(it) }
+        createValue(
+            when (value) {
+                is Int -> v8Runtime.createV8ValueIntegerObject(value)
+                else -> v8Runtime.createV8ValueDoubleObject(value.toDouble())
+            },
+        ) as JsNumberObject
 
     actual override fun createObject(): JsObject =
-        JsObjectImpl(this, v8Runtime.createV8ValueObject())
-            .also { registerValue(it) }
+        createNativeValue(
+            v8Runtime.createV8ValueObject(),
+            wrap = { JsObjectImpl(this, it).also { registerValue(it) } },
+        ) as JsObject
 
     actual override fun createPromise(executor: JsScope.(resolve: JsFunction, reject: JsFunction) -> Unit): JsPromise =
         jsScoped(this) {
@@ -361,63 +348,79 @@ actual class JsEngineContext :
     actual override fun createString(value: String): JsString = createValue(value) as JsString
 
     actual override fun createStringObject(value: String): JsStringObject =
-        JsStringObjectImpl(
-            this,
-            v8Runtime.createV8ValueStringObject(value),
-        ).also { registerValue(it) }
+        createValue(v8Runtime.createV8ValueStringObject(value)) as JsStringObject
 
     actual override fun createUint8Array(value: ByteArray): JsUint8Array = createValue(value) as JsUint8Array
 
-    private fun createValue(value: Any?): JsValue {
-        if (value == null) {
-            return NULL
-        }
-        if (value is V8Value) {
-            if (value.v8Runtime != v8Runtime) {
-                throw IllegalArgumentException("value runtime must match the JsContext runtime")
+    private fun createValue(value: Any?): JsValue =
+        when (value) {
+            null -> {
+                NULL
             }
-            if (value is V8ValueNull) {
-                return NULL
-            }
-            if (value is V8ValueUndefined) {
-                return UNDEFINED
-            }
-            if (value is V8ValueObject &&
-                value !== (globalThis as JsValueImpl).v8Value &&
-                value.strictEquals((globalThis as JsValueImpl).v8Value)
-            ) {
-                value.closeQuietly()
-                return globalThis
-            }
-        }
-        return when (value) {
+
             is Boolean -> {
-                JsBooleanImpl(this, v8Runtime.createV8ValueBoolean(value))
+                createNativeValue(v8Runtime.createV8ValueBoolean(value))
             }
 
             is Int -> {
-                JsNumberImpl(this, v8Runtime.createV8ValueInteger(value))
-            }
-
-            is Long -> {
-                JsNumberImpl(this, v8Runtime.createV8ValueLong(value))
+                createNativeValue(v8Runtime.createV8ValueInteger(value))
             }
 
             is Number -> {
-                JsNumberImpl(this, v8Runtime.createV8ValueDouble(value.toDouble()))
+                createNativeValue(v8Runtime.createV8ValueDouble(value.toDouble()))
             }
 
             is String -> {
-                JsStringImpl(this, v8Runtime.createV8ValueString(value))
+                createNativeValue(v8Runtime.createV8ValueString(value))
             }
 
             is ByteArray -> {
-                JsUint8ArrayImpl(
-                    this,
-                    v8Runtime.createV8ValueTypedArray(V8ValueType.Uint8Array, value.size).apply { fromBytes(value) },
-                )
+                createNativeValue(v8Runtime.createV8ValueTypedArray(V8ValueType.Uint8Array, value.size)) {
+                    it.fromBytes(value)
+                }
             }
 
+            is V8Value -> {
+                createNativeValue(value)
+            }
+
+            else -> {
+                throw IllegalArgumentException("unexpected value ${value::class}")
+            }
+        }
+
+    // Until wrapping and registration succeed, this method owns the incoming native handle.
+    private inline fun <T : V8Value> createNativeValue(
+        value: T,
+        wrap: (T) -> JsValue = { wrapNativeValue(it) },
+        initialize: (T) -> Unit = {},
+    ): JsValue =
+        try {
+            initialize(value)
+            wrap(value)
+        } catch (e: Throwable) {
+            value.closeQuietly()
+            throw e
+        }
+
+    private fun wrapNativeValue(value: V8Value): JsValue {
+        if (value.v8Runtime != v8Runtime) {
+            throw IllegalArgumentException("value runtime must match the JsContext runtime")
+        }
+        if (value is V8ValueNull) {
+            return NULL
+        }
+        if (value is V8ValueUndefined) {
+            return UNDEFINED
+        }
+        if (value is V8ValueObject &&
+            value !== (globalThis as JsValueImpl).v8Value &&
+            value.strictEquals((globalThis as JsValueImpl).v8Value)
+        ) {
+            value.closeQuietly()
+            return globalThis
+        }
+        return when (value) {
             is V8ValueBoolean -> {
                 JsBooleanImpl(this, value)
             }
@@ -426,8 +429,11 @@ actual class JsEngineContext :
                 JsBooleanObjectImpl(this, value)
             }
 
-            is V8ValueBigInteger -> {
-                JsNumberImpl(this, value)
+            is V8ValueBigNumber<*> -> {
+                value.use {
+                    // Javet may already have narrowed BigInt to a signed Long before this boundary.
+                    JsNumberImpl(this, v8Runtime.createV8ValueDouble((it.value as Number).toDouble()))
+                }
             }
 
             is V8ValueInteger -> {
@@ -435,14 +441,6 @@ actual class JsEngineContext :
             }
 
             is V8ValueIntegerObject -> {
-                JsNumberObjectImpl(this, value)
-            }
-
-            is V8ValueLong -> {
-                JsNumberImpl(this, value)
-            }
-
-            is V8ValueLongObject -> {
                 JsNumberObjectImpl(this, value)
             }
 

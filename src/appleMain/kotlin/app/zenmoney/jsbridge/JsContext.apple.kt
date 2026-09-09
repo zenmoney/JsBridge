@@ -124,6 +124,7 @@ actual class JsEngineContext :
             """.trimIndent(),
         )
     private var jsBoolean: JSValue? = jsContext.evaluateScript("Boolean")!!
+    private var jsBooleanValueOf: JSValue? = jsContext.evaluateScript("Function.prototype.call.bind(Boolean.prototype.valueOf)")!!
     private var jsDate: JSValue? = jsContext.evaluateScript("Date")!!
     private var jsDefineProperty: JSValue? = jsContext.evaluateScript("Object.defineProperty")!!
     private var jsError: JSValue? = jsContext.evaluateScript("Error")!!
@@ -233,7 +234,14 @@ actual class JsEngineContext :
                     JSValue.valueWithBool(value, jsContext)!!,
                 ),
             )!!,
+            value,
         ).also { registerValue(it) }
+
+    private fun getBooleanObjectValue(value: JSValue): Boolean {
+        val primitiveValue = jsBooleanValueOf.checkNotNull().callWithArguments(listOf(value))
+        throwExceptionIfNeeded()
+        return primitiveValue!!.toBool()
+    }
 
     actual override fun createDate(millis: Long): JsDate =
         createValue(jsDate.checkNotNull().constructWithArguments(listOf(millis))) as JsDate
@@ -446,9 +454,11 @@ actual class JsEngineContext :
                     }
 
                     else -> {
-                        val type = jsTypeOf.checkNotNull().callWithArguments(listOf(value))!!.toString()
+                        val typeValue = jsTypeOf.checkNotNull().callWithArguments(listOf(value))
+                        throwExceptionIfNeeded()
+                        val type = typeValue!!.toString()
                         when {
-                            type == "boolean" -> JsBooleanObjectImpl(this, value)
+                            type == "boolean" -> JsBooleanObjectImpl(this, value, getBooleanObjectValue(value))
                             type == "number" -> JsNumberObjectImpl(this, value)
                             type == "bigint" -> createBigIntNumber(value)
                             type == "string" -> JsStringObjectImpl(this, value)
@@ -485,6 +495,7 @@ actual class JsEngineContext :
             _jsContext = null
             jsCallFunction = null
             jsBoolean = null
+            jsBooleanValueOf = null
             jsDate = null
             jsDefineProperty = null
             jsError = null

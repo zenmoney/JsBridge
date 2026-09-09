@@ -7,6 +7,10 @@ internal interface JsWebView : AutoCloseable {
         evaluateJavaScript(jsWebViewRuntimeScript)
     }
 
+    fun disposeRuntime() {
+        evaluateJavaScript(jsWebViewDisposeRuntimeScript)
+    }
+
     fun evaluateJavaScript(script: String)
 }
 

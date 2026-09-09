@@ -16,6 +16,51 @@ import kotlin.test.assertTrue
 
 class JsWebViewNavigationTest {
     @Test
+    fun reconnectsRepeatedlyWithoutRebindingOrReloadingTheNativeInterface() =
+        runBlocking {
+            lateinit var webView: CountingWebView
+            onMain { webView = CountingWebView(ApplicationProvider.getApplicationContext<Context>()) }
+            val eventLoop = JsEventLoop(coroutineContext)
+            var calls = 0
+            try {
+                repeat(5) { generation ->
+                    val context = JsWebViewContext(webView, disposeWebView = {})
+                    try {
+                        eventLoop.attachTo(context)
+                        jsScoped(context) {
+                            if (generation == 0) {
+                                eval("globalThis.firstNativeBridge = $JS_WEB_VIEW_ANDROID_INTERFACE; globalThis.previousGeneration = -1")
+                            }
+                            assertTrue(eval("firstNativeBridge === $JS_WEB_VIEW_ANDROID_INTERFACE").boolean)
+                            assertEquals(generation - 1, eval("previousGeneration").int)
+                            assertEquals(context.id, eval("$JS_WEB_VIEW_BRIDGE_OBJECT.sessionId").int)
+                            context.globalThis["nativeGeneration"] =
+                                JsFunction {
+                                    calls++
+                                    JsNumber(generation)
+                                }
+                            withTimeout(5_000) {
+                                assertEquals(generation, eval("nativeGeneration()").await().int)
+                            }
+                            eval("globalThis.previousGeneration = $generation")
+                        }
+                    } finally {
+                        if (generation % 2 == 0) context.close() else context.closeAsync().join()
+                    }
+                    onMain {
+                        assertEquals(1, webView.bridgeInstallations)
+                        assertEquals(0, webView.bridgeRemovals)
+                    }
+                }
+                assertEquals(5, calls)
+            } finally {
+                eventLoop.cancel()
+                eventLoop.run()
+                onMain { webView.destroy() }
+            }
+        }
+
+    @Test
     fun initializesWebViewOnlyOnFirstUse() {
         val webView = createWebView()
         var disposed = false
@@ -107,11 +152,21 @@ class JsWebViewNavigationTest {
                             newCalls++
                             JsNumber(context, 42)
                         }
-                    context.evaluateScript("previousCallback(); currentCallback()").use { promise ->
-                        withTimeout(5_000) {
-                            assertEquals(42, promise.awaitEscaped().use { it.int })
+                    context
+                        .evaluateScript(
+                            """
+                            (() => {
+                                let message;
+                                try { previousCallback(); } catch (error) { message = error.message; }
+                                if (message !== 'JsContext is closed') throw new Error('Unexpected closed callback result');
+                                return currentCallback();
+                            })()
+                            """.trimIndent(),
+                        ).use { promise ->
+                            withTimeout(5_000) {
+                                assertEquals(42, promise.awaitEscaped().use { it.int })
+                            }
                         }
-                    }
                 }
                 assertEquals(0, oldCalls)
                 assertEquals(1, newCalls)
@@ -189,5 +244,27 @@ class JsWebViewNavigationTest {
 
     private fun onMain(block: () -> Unit) {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(block)
+    }
+
+    private class CountingWebView(
+        context: Context,
+    ) : WebView(context) {
+        var bridgeInstallations = 0
+            private set
+        var bridgeRemovals = 0
+            private set
+
+        override fun addJavascriptInterface(
+            obj: Any,
+            interfaceName: String,
+        ) {
+            if (interfaceName == JS_WEB_VIEW_ANDROID_INTERFACE) bridgeInstallations++
+            super.addJavascriptInterface(obj, interfaceName)
+        }
+
+        override fun removeJavascriptInterface(interfaceName: String) {
+            if (interfaceName == JS_WEB_VIEW_ANDROID_INTERFACE) bridgeRemovals++
+            super.removeJavascriptInterface(interfaceName)
+        }
     }
 }

@@ -588,6 +588,9 @@ private val jsWebViewExpressionValueCodecTags =
 
 internal val jsWebViewRuntimeScript: String = createJsWebViewRuntimeScript()
 
+internal val jsWebViewDisposeRuntimeScript: String =
+    "window.$JS_WEB_VIEW_BRIDGE_OBJECT && window.$JS_WEB_VIEW_BRIDGE_OBJECT.dispose();"
+
 internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
     """
     (function () {
@@ -607,7 +610,8 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
         // their new native reference or restored strong entry must be rolled back.
         // Any successful post removes its handles, including those prepared by an outer call.
         const unpublishedHandles = new Set();
-        const finalizationRegistry = typeof FinalizationRegistry === "function"
+        let disposed = false;
+        let finalizationRegistry = typeof FinalizationRegistry === "function"
             ? new FinalizationRegistry(handle => {
                 try {
                     post('[${JsWebViewProtocolCode.CALLBACK_DEALLOCATE.toJson()},' + handle + ']');
@@ -662,7 +666,7 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
         }
 
         function updateHandleRefCount(handle, change) {
-            if (handle === 0) return;
+            if (disposed || handle === 0) return;
             const refCount = (refCountByHandle.get(handle) || 0) + change;
             if (refCount > 0) {
                 refCountByHandle.set(handle, refCount);
@@ -674,6 +678,7 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
         }
 
         function post(message) {
+            if (disposed) throw new Error("JsContext is closed");
             if (window.$JS_WEB_VIEW_ANDROID_INTERFACE && window.$JS_WEB_VIEW_ANDROID_INTERFACE.postMessage) {
                 window.$JS_WEB_VIEW_ANDROID_INTERFACE.postMessage(message, sessionId);
             } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.$JS_WEB_VIEW_IOS_HANDLER) {
@@ -709,6 +714,7 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
         }
 
         function encode(value, handles) {
+            if (disposed) throw new Error("JsContext is closed");
             const valueType = typeof value;
             if (value === null || valueType !== "object" && valueType !== "function") {
                 const encoded = coreCodec.encode(value);
@@ -826,6 +832,7 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
                 case ${JsWebViewProtocolCode.COMMAND_CREATE_FUNCTION.toJson()}: {
                     const callbackId = command[1];
                     return encode(function (...args) {
+                        if (disposed) throw new Error("JsContext is closed");
                         const thiz = this;
                         return new Promise((resolve, reject) => {
                             const jsCallbackId = nextJsCallbackId++;
@@ -903,9 +910,22 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
             }
         }
 
-        window.$JS_WEB_VIEW_BRIDGE_OBJECT = {
+        const bridge = {
             sessionId,
+            dispose () {
+                if (disposed) return;
+                disposed = true;
+                const error = new Error("JsContext is closed");
+                for (const callback of pendingJsCallbacks.values()) callback.reject(error);
+                pendingJsCallbacks.clear();
+                objectByHandle.clear();
+                refCountByHandle.clear();
+                unpublishedHandles.clear();
+                finalizationRegistry = null;
+                if (window.$JS_WEB_VIEW_BRIDGE_OBJECT === bridge) delete window.$JS_WEB_VIEW_BRIDGE_OBJECT;
+            },
             dispatch (message, requestId) {
+                if (disposed) return;
                 if (requestId !== undefined) {
                     const handles = [];
                     try {
@@ -954,6 +974,7 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
                 }
             },
         };
+        window.$JS_WEB_VIEW_BRIDGE_OBJECT = bridge;
     })();
     """.trimIndent()
 

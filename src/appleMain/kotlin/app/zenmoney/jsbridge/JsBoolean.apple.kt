@@ -29,7 +29,8 @@ internal class JsBooleanImpl(
 internal class JsBooleanObjectImpl(
     context: JsContext,
     jsValue: JSValue,
+    private val value: Boolean,
 ) : JsObjectImpl(context, jsValue),
     JsBooleanObject {
-    override fun toBoolean(): Boolean = jsValue.toBool()
+    override fun toBoolean(): Boolean = value
 }

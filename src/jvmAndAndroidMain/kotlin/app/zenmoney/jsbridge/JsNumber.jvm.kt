@@ -1,11 +1,8 @@
 package app.zenmoney.jsbridge
 
-import com.caoccao.javet.values.IV8ValuePrimitiveObject
-import com.caoccao.javet.values.primitive.V8ValueBigNumber
 import com.caoccao.javet.values.primitive.V8ValueNumber
 import com.caoccao.javet.values.reference.V8ValueDoubleObject
 import com.caoccao.javet.values.reference.V8ValueIntegerObject
-import com.caoccao.javet.values.reference.V8ValueLongObject
 
 actual sealed interface JsNumber : JsValue {
     actual fun toNumber(): Number
@@ -15,19 +12,11 @@ actual sealed interface JsNumberObject :
     JsObject,
     JsNumber
 
-internal class JsNumberImpl :
-    JsValueImpl,
+internal class JsNumberImpl(
+    context: JsContext,
+    v8Value: V8ValueNumber<*>,
+) : JsValueImpl(context, v8Value),
     JsNumber {
-    constructor(
-        context: JsContext,
-        v8Value: V8ValueNumber<*>,
-    ) : super(context, v8Value)
-
-    constructor(
-        context: JsContext,
-        v8Value: V8ValueBigNumber<*>,
-    ) : super(context, v8Value)
-
     override fun hashCode(): Int = toNumber().hashCode()
 
     override fun equals(other: Any?): Boolean =
@@ -36,34 +25,27 @@ internal class JsNumberImpl :
             context === other.context &&
             toNumber() == other.toNumber()
 
-    override fun toNumber(): Number =
-        (((v8Value as? V8ValueNumber<*>)?.value ?: (v8Value as V8ValueBigNumber<*>).value) as Number).toDouble()
+    override fun toNumber(): Number = ((v8Value as V8ValueNumber<*>).value as Number).toDouble()
 }
 
 internal class JsNumberObjectImpl :
     JsObjectImpl,
     JsNumberObject {
-    private val value: Number =
-        run {
-            @Suppress("UNCHECKED_CAST")
-            val v8PrimitiveValue = (v8Value as IV8ValuePrimitiveObject<V8ValueNumber<*>>).valueOf()
-            (v8PrimitiveValue.value.also { v8PrimitiveValue.closeQuietly() } as Number).toDouble()
-        }
+    private val value: Number
 
     constructor(
         context: JsContext,
         v8Value: V8ValueIntegerObject,
-    ) : super(context, v8Value)
-
-    constructor(
-        context: JsContext,
-        v8Value: V8ValueLongObject,
-    ) : super(context, v8Value)
+    ) : super(context, v8Value) {
+        value = v8Value.valueOf().use { it.asDouble() }
+    }
 
     constructor(
         context: JsContext,
         v8Value: V8ValueDoubleObject,
-    ) : super(context, v8Value)
+    ) : super(context, v8Value) {
+        value = v8Value.valueOf().use { it.asDouble() }
+    }
 
     override fun toNumber(): Number = value
 }

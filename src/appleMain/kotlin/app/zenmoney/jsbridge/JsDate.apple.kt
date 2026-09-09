@@ -10,7 +10,7 @@ actual sealed interface JsDate : JsObject {
 }
 
 context(scope: JsScope)
-fun JsDate(date: NSDate): JsDate = JsDate(scope.context, (date.timeIntervalSinceReferenceDate * 1000.0).toLong()).autoClose()
+fun JsDate(date: NSDate): JsDate = JsDate(scope.context, (date.timeIntervalSince1970 * 1000.0).toLong()).autoClose()
 
 internal class JsDateImpl(
     context: JsContext,

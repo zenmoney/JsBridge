@@ -258,6 +258,9 @@ class JsEventLoop(
                                         return@launch
                                     }
                                     tick(contextId, id)
+                                    if (shouldRepeat && delayMs <= 0L) {
+                                        yield()
+                                    }
                                 } while (shouldRepeat)
                             }
                         timerJobs[jobId] = timerJob

@@ -353,7 +353,8 @@ class JsWebViewContextProtocolTest {
 
         context.close()
 
-        assertEquals(scriptCount, webView.scripts.size)
+        assertEquals(scriptCount + 1, webView.scripts.size)
+        assertEquals(jsWebViewDisposeRuntimeScript, webView.scripts.last())
         assertTrue(webView.isClosed)
     }
 
@@ -371,7 +372,8 @@ class JsWebViewContextProtocolTest {
 
         context.close()
 
-        assertEquals(scriptCount, webView.scripts.size)
+        assertEquals(scriptCount + 1, webView.scripts.size)
+        assertEquals(jsWebViewDisposeRuntimeScript, webView.scripts.last())
     }
 
     @Test

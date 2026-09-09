@@ -1,5 +1,13 @@
 package app.zenmoney.jsbridge
 
+/**
+ * A JavaScript Number. Primitive BigInt values are exposed as [JsNumber] with Double precision
+ * and are passed back to JavaScript as Number. Boxed BigInt values (`Object(1n)`) remain [JsObject]s.
+ *
+ * On JVM, Javet 5.0.11 can narrow a BigInt to a signed Long before the bridge receives it,
+ * so some values outside the Long range may have an incorrect sign or magnitude.
+ * Explicitly evaluating `Number(value)` in JavaScript avoids that upstream limitation.
+ */
 expect sealed interface JsNumber : JsValue {
     fun toNumber(): Number
 }

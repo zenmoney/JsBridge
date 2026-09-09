@@ -17,7 +17,7 @@ private const val NATIVE_EXCEPTION_TAG = "app.zenmoney.jsbridge.nativeException"
 private typealias JsWebViewPendingRequests = MutableIntObjectMap<(Result<JsWebViewProtocolValue>) -> Unit>
 
 class JsWebViewContext internal constructor(
-    private val createWebView: (contextId: Int) -> JsWebView,
+    createWebView: (contextId: Int) -> JsWebView,
 ) : JsContext(Unit) {
     companion object {}
 
@@ -41,6 +41,7 @@ class JsWebViewContext internal constructor(
         }
     }
 
+    private var createWebView: ((contextId: Int) -> JsWebView)? = createWebView
     private var webView: JsWebView? = null
     private val webViewMessageHandler =
         JsWebViewMessageHandler(
@@ -270,6 +271,7 @@ class JsWebViewContext internal constructor(
     }
 
     override fun close() {
+        createWebView = null
         core.close {
             cancelPendingRequests(takePendingRequests())
             functionByCallbackId.clear()
@@ -547,13 +549,16 @@ class JsWebViewContext internal constructor(
     private fun getOrCreateWebView(): JsWebView {
         check(!core.isClosed) { "JsContext is closed" }
         webView?.let { return it }
-        return createWebView(id).also { createdWebView ->
+        val factory = checkNotNull(createWebView) { "JsWebView factory has already been used" }
+        createWebView = null
+        return factory(id).also { createdWebView ->
             try {
                 createdWebView.onMessage = webViewMessageHandler::handle
                 createdWebView.initializeRuntime()
                 webView = createdWebView
             } catch (e: Throwable) {
                 createdWebView.onMessage = {}
+                runCatching { createdWebView.disposeRuntime() }
                 runCatching { createdWebView.close() }
                 throw e
             }
@@ -563,8 +568,14 @@ class JsWebViewContext internal constructor(
     private fun closeWebView() {
         val initializedWebView = webView
         webView = null
-        initializedWebView?.onMessage = {}
-        initializedWebView?.close()
+        if (initializedWebView != null) {
+            initializedWebView.onMessage = {}
+            try {
+                initializedWebView.disposeRuntime()
+            } finally {
+                initializedWebView.close()
+            }
+        }
     }
 
     private fun dispatchWebViewNativeCallback(block: () -> Unit) {
@@ -794,7 +805,7 @@ private class JsWebViewArray(
         get() =
             (context as JsWebViewContext)
                 .executeWebViewMessageBlockingAndDecode(JsWebViewMessage.GetObjectValue(handle, "length"), "get")
-                .let { (it as JsNumber).toNumber().toInt() }
+                .use { (it as JsNumber).toNumber().toInt() }
 }
 
 private class JsWebViewFunction(
@@ -816,8 +827,9 @@ private class JsWebViewBooleanObject(
     JsBooleanObject {
     override fun toBoolean(): Boolean {
         val context = context as JsWebViewContext
-        val valueOf = context.getObjectValue(this, "valueOf") as JsFunction
-        return (context.callFunction(valueOf, emptyList(), this) as JsBoolean).toBoolean()
+        return context.getObjectValue(this, "valueOf").use { valueOf ->
+            context.callFunction(valueOf as JsFunction, emptyList(), this).use { (it as JsBoolean).toBoolean() }
+        }
     }
 }
 
@@ -828,8 +840,9 @@ private class JsWebViewNumberObject(
     JsNumberObject {
     override fun toNumber(): Number {
         val context = context as JsWebViewContext
-        val valueOf = context.getObjectValue(this, "valueOf") as JsFunction
-        return (context.callFunction(valueOf, emptyList(), this) as JsNumber).toNumber()
+        return context.getObjectValue(this, "valueOf").use { valueOf ->
+            context.callFunction(valueOf as JsFunction, emptyList(), this).use { (it as JsNumber).toNumber() }
+        }
     }
 }
 
@@ -840,8 +853,9 @@ private class JsWebViewStringObject(
     JsStringObject {
     override fun toString(): String {
         val context = context as JsWebViewContext
-        val valueOf = context.getObjectValue(this, "valueOf") as JsFunction
-        return (context.callFunction(valueOf, emptyList(), this) as JsString).toString()
+        return context.getObjectValue(this, "valueOf").use { valueOf ->
+            context.callFunction(valueOf as JsFunction, emptyList(), this).use { (it as JsString).toString() }
+        }
     }
 }
 
@@ -851,9 +865,8 @@ private class JsWebViewDate(
 ) : JsWebViewObject(context, handle, JsWebViewProtocolHandleType.DATE),
     JsDate {
     private val millis by lazy(LazyThreadSafetyMode.NONE) {
-        jsScoped(context) {
-            val getTime = context.getObjectValue(this@JsWebViewDate, "getTime") as JsFunction
-            (context.callFunction(getTime, emptyList(), this@JsWebViewDate) as JsNumber).toNumber().toLong()
+        context.getObjectValue(this, "getTime").use { getTime ->
+            context.callFunction(getTime as JsFunction, emptyList(), this).use { (it as JsNumber).toNumber().toLong() }
         }
     }
 
@@ -872,7 +885,7 @@ private class JsWebViewUint8Array(
     override val size: Int
         get() {
             val context = context as JsWebViewContext
-            return (context.getObjectValue(this, "byteLength") as JsNumber).toNumber().toInt()
+            return context.getObjectValue(this, "byteLength").use { (it as JsNumber).toNumber().toInt() }
         }
 
     override fun toByteArray(): ByteArray {

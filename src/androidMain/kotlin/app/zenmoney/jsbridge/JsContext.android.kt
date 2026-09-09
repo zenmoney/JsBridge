@@ -223,12 +223,7 @@ actual class JsEngineContext :
             } catch (e: Exception) {
                 throw JsException(e.message ?: e.toString(), e, emptyMap())
             }
-        throwExceptionIfNeeded {
-            if (v8Value is V8Value) {
-                v8Value.closeQuietly()
-            }
-        }
-        return createValue(v8Value)
+        return createResult(v8Value)
     }
 
     @Throws(JsException::class)
@@ -237,26 +232,20 @@ actual class JsEngineContext :
         args: List<JsValue>,
         thiz: JsValue,
     ): JsValue {
-        val fullArgs =
+        val v8Value =
             createArray(
                 listOf(
                     f,
                     thiz,
                     *args.toTypedArray(),
                 ),
-            )
-        val v8Value: Any? =
-            (callFunction as JsFunctionImpl).v8Function.call(
-                null,
-                (fullArgs as JsArrayImpl).v8Array,
-            )
-        fullArgs.close()
-        throwExceptionIfNeeded {
-            if (v8Value is V8Value) {
-                v8Value.closeQuietly()
+            ).use { fullArgs ->
+                (callFunction as JsFunctionImpl).v8Function.call(
+                    null,
+                    (fullArgs as JsArrayImpl).v8Array,
+                )
             }
-        }
-        return createValue(v8Value)
+        return createResult(v8Value)
     }
 
     @Throws(JsException::class)
@@ -271,7 +260,15 @@ actual class JsEngineContext :
             },
         )
 
-    private inline fun throwExceptionIfNeeded(ifException: () -> Unit) {
+    private fun createResult(value: Any?): JsValue =
+        if (value is V8Value) {
+            createNativeValue(value) { throwExceptionIfNeeded() }
+        } else {
+            throwExceptionIfNeeded()
+            createValue(value)
+        }
+
+    private fun throwExceptionIfNeeded() {
         jsScoped(this) {
             val arr =
                 createValue(
@@ -281,40 +278,38 @@ actual class JsEngineContext :
             if (hasError is JsBoolean && hasError.toBoolean()) {
                 val error = arr[0]
                 val e = createException(error)
-                ifException()
                 throw e
             }
         }
     }
 
-    actual override fun createArray(value: Iterable<JsValue>): JsArray {
-        return JsArrayImpl(
-            this,
-            V8Array(v8Runtime).apply {
-                value.forEach { value ->
-                    if (value == NULL) {
-                        pushNull()
-                        return@forEach
-                    }
-                    if (value == UNDEFINED) {
-                        pushUndefined()
-                        return@forEach
-                    }
-                    val valueV8Value = (value as? JsValueImpl)?.v8Value as? V8Value
-                    if (valueV8Value != null) {
-                        push(valueV8Value)
-                        return@forEach
-                    }
-                    when (value) {
-                        is JsBoolean -> push(value.toBoolean())
-                        is JsNumber -> push(value.toNumber().toDouble())
-                        is JsString -> push(value.toString())
-                        else -> TODO()
-                    }
+    actual override fun createArray(value: Iterable<JsValue>): JsArray =
+        createNativeValue(
+            V8Array(v8Runtime),
+            wrap = { JsArrayImpl(this, it).also { registerValue(it) } },
+        ) { array ->
+            value.forEach { value ->
+                if (value == NULL) {
+                    array.pushNull()
+                    return@forEach
                 }
-            },
-        ).also { registerValue(it) }
-    }
+                if (value == UNDEFINED) {
+                    array.pushUndefined()
+                    return@forEach
+                }
+                val valueV8Value = (value as? JsValueImpl)?.v8Value as? V8Value
+                if (valueV8Value != null) {
+                    array.push(valueV8Value)
+                    return@forEach
+                }
+                when (value) {
+                    is JsBoolean -> array.push(value.toBoolean())
+                    is JsNumber -> array.push(value.toNumber().toDouble())
+                    is JsString -> array.push(value.toString())
+                    else -> TODO()
+                }
+            }
+        } as JsArray
 
     actual override fun createBoolean(value: Boolean): JsBoolean = createValue(value) as JsBoolean
 
@@ -360,8 +355,7 @@ actual class JsEngineContext :
     }
 
     actual override fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction =
-        JsFunctionImpl(
-            this,
+        createNativeValue(
             V8Function(v8Runtime) { thiz, args ->
                 jsFunctionScoped(this) {
                     val context = context as JsEngineContext
@@ -389,7 +383,7 @@ actual class JsEngineContext :
                     }
                 }
             },
-        ).also { registerValue(it) }
+        ) as JsFunction
 
     actual override fun createNumber(value: Number): JsNumber = createValue(value) as JsNumber
 
@@ -399,9 +393,10 @@ actual class JsEngineContext :
         }
 
     actual override fun createObject(): JsObject =
-        JsObjectImpl(this, V8Object(v8Runtime)).also {
-            registerValue(it)
-        }
+        createNativeValue(
+            V8Object(v8Runtime),
+            wrap = { JsObjectImpl(this, it).also { registerValue(it) } },
+        ) as JsObject
 
     actual override fun createPromise(executor: JsScope.(resolve: JsFunction, reject: JsFunction) -> Unit): JsPromise =
         jsScoped(this) {
@@ -428,7 +423,49 @@ actual class JsEngineContext :
 
     actual override fun createUint8Array(value: ByteArray): JsUint8Array = createValue(value) as JsUint8Array
 
-    private fun createValue(value: Any?): JsValue {
+    private fun createValue(value: Any?): JsValue =
+        when (value) {
+            is V8Value -> {
+                createNativeValue(value)
+            }
+
+            is ByteArray -> {
+                val buffer = V8ArrayBuffer(v8Runtime, ByteBuffer.allocateDirect(value.size).apply { put(value) })
+                try {
+                    createNativeValue(
+                        V8TypedArray(
+                            v8Runtime,
+                            buffer,
+                            V8Value.UNSIGNED_INT_8_ARRAY,
+                            0,
+                            value.size,
+                        ),
+                    )
+                } finally {
+                    buffer.closeQuietly()
+                }
+            }
+
+            else -> {
+                wrapValue(value)
+            }
+        }
+
+    // Until wrapping and registration succeed, this method owns the incoming native handle.
+    private inline fun <T : V8Value> createNativeValue(
+        value: T,
+        wrap: (T) -> JsValue = { wrapValue(it) },
+        initialize: (T) -> Unit = {},
+    ): JsValue =
+        try {
+            initialize(value)
+            wrap(value)
+        } catch (e: Throwable) {
+            value.closeQuietly()
+            throw e
+        }
+
+    private fun wrapValue(value: Any?): JsValue {
         if (value == null) {
             return NULL
         }
@@ -457,20 +494,6 @@ actual class JsEngineContext :
 
             is String -> {
                 JsStringImpl(this, value)
-            }
-
-            is ByteArray -> {
-                val buffer = V8ArrayBuffer(v8Runtime, ByteBuffer.allocateDirect(value.size).apply { put(value) })
-                JsUint8ArrayImpl(
-                    this,
-                    V8TypedArray(
-                        v8Runtime,
-                        buffer,
-                        V8Value.UNSIGNED_INT_8_ARRAY,
-                        0,
-                        value.size,
-                    ),
-                ).also { buffer.closeQuietly() }
             }
 
             is V8TypedArray -> {

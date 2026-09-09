@@ -197,10 +197,14 @@ internal val jsPromiseRejectionTrackingScript: String =
 
         function deferToHostTurn(callback) {
             if (typeof globalThis.setTimeout === "function") {
-                globalThis.setTimeout(callback, 0);
-            } else {
-                nativeThen.call(nativePromise.resolve(), callback);
+                try {
+                    globalThis.setTimeout(callback, 0);
+                    return;
+                } catch (_) {
+                    // A disposed WebView's timer throws; the rejection observer must still complete.
+                }
             }
+            nativeThen.call(nativePromise.resolve(), callback);
         }
 
         function createPromiseRejectionEvent(type, promise, reason) {

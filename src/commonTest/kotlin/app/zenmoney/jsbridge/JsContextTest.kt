@@ -4,13 +4,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.AfterTest
@@ -177,6 +180,53 @@ abstract class JsContextTest {
             closeJob.join()
             eventLoop.cancel()
             eventLoop.run()
+        }
+
+    @Test
+    fun cancelledWaitersLeaveTheLastAwaiterAndLatePromiseCompletionIntact() =
+        runTest {
+            val eventLoop = JsEventLoop(coroutineContext).apply { attachTo(context) }
+            try {
+                for (reject in listOf(false, true)) {
+                    jsScoped(context) {
+                        val promise =
+                            eval(
+                                "new Promise((resolve, reject) => { globalThis.completeAwaitProbe = ${if (reject) "reject" else "resolve"}; })",
+                            )
+                        val waiters =
+                            List(16) {
+                                async(start = CoroutineStart.UNDISPATCHED) {
+                                    runCatching {
+                                        jsScoped(context) { promise.await().int }
+                                    }
+                                }
+                            }
+                        waiters.dropLast(1).forEach { it.cancelAndJoin() }
+                        testScheduler.runCurrent()
+                        assertTrue(waiters.last().isActive)
+
+                        eval(if (reject) "completeAwaitProbe(new Error('late rejection'))" else "completeAwaitProbe(42)")
+                        val running = async(start = CoroutineStart.UNDISPATCHED) { eventLoop.run() }
+                        // WebView callbacks arrive from a real host queue; use a real deadline instead of virtual test time.
+                        val result =
+                            withContext(Dispatchers.Default) {
+                                withTimeout(5_000) { waiters.last().await() }
+                            }
+                        if (reject) {
+                            assertEquals("late rejection", assertIs<JsException>(result.exceptionOrNull()).message)
+                        } else {
+                            assertEquals(42, result.getOrThrow())
+                        }
+                        running.await()
+                    }
+                    eventLoop.run()
+                    assertTrue(eventLoop.coroutineContext[Job]!!.children.none())
+                }
+                eventLoop.runAndComplete()
+            } finally {
+                eventLoop.cancel()
+                eventLoop.run()
+            }
         }
 
     private fun isBigIntSupported(): Boolean =
@@ -350,6 +400,159 @@ abstract class JsContextTest {
 
         assertEquals(JsNumber(context, 9007199254740992.0), value)
     }
+
+    private fun primitiveBigIntCases(): List<Pair<String, Double>> =
+        listOf(
+            "1n" to 1.0,
+            "9007199254740993n" to 9007199254740992.0,
+            // The separate 2^64 wire diagnostic covers Kotlin/Native decimal formatting loss.
+            // These values exercise large BigInt conversion without that unrelated roundtrip loss.
+            "100000000000000000000n" to 1.0e20,
+            "-100000000000000000000n" to -1.0e20,
+            "(10n ** 1000n)" to Double.POSITIVE_INFINITY,
+            "-(10n ** 1000n)" to Double.NEGATIVE_INFINITY,
+        )
+
+    private fun assertPrimitiveBigIntNumber(
+        value: JsValue,
+        expected: Double,
+    ) {
+        assertFalse(value is JsObject)
+        assertEquals(expected, assertIs<Double>(assertIs<JsNumber>(value).toNumber()))
+    }
+
+    @Test
+    fun convertsPrimitiveBigIntsToNumbersAcrossValueOperations() =
+        runTestWithEventLoop {
+            jsScoped(context) {
+                if (!eval("typeof BigInt === 'function'").boolean) return@jsScoped
+                val checkRoundTrip =
+                    assertIs<JsFunction>(
+                        eval(
+                            """
+                            (value, holder, expectedLiteral) => {
+                                const expected = Number(expectedLiteral);
+                                return typeof value === 'number' && typeof holder.returned === 'number' &&
+                                    Object.is(value, expected) && Object.is(holder.returned, expected);
+                            }
+                            """.trimIndent(),
+                        ),
+                    )
+                val holder = JsObject()
+                for ((literal, expected) in primitiveBigIntCases()) {
+                    assertEquals(expected, eval("Number($literal)").double, literal)
+                    val expectedLiteral = assertIs<JsString>(eval("String($literal)"))
+                    val value = eval(literal)
+                    for (candidate in listOf(value, JsValueAlias(value))) {
+                        assertPrimitiveBigIntNumber(candidate, expected)
+                        holder["returned"] = candidate
+                        assertTrue(checkRoundTrip(candidate, holder, expectedLiteral).boolean, literal)
+                    }
+                }
+
+                assertPrimitiveBigIntNumber(eval("18446744073709551616n"), 18446744073709551616.0)
+                assertPrimitiveBigIntNumber(eval("-18446744073709551616n"), -18446744073709551616.0)
+
+                val literal = "100000000000000000000n"
+                val source = assertIs<JsObject>(eval("({value: $literal, array: [$literal], read: () => $literal})"))
+                val expected = eval("Number($literal)")
+                val expectedLiteral = assertIs<JsString>(eval("String($literal)"))
+                val read = assertIs<JsFunction>(source["read"])
+                for (value in listOf(source["value"], assertIs<JsArray>(source["array"])[0], read())) {
+                    assertPrimitiveBigIntNumber(value, expected.double)
+                    holder["returned"] = value
+                    assertTrue(checkRoundTrip(value, holder, expectedLiteral).boolean)
+                }
+            }
+        }
+
+    @Test
+    fun preservesBoxedBigIntIdentityAcrossValueOperations() =
+        runTestWithEventLoop {
+            jsScoped(context) {
+                if (!eval("typeof BigInt === 'function'").boolean) return@jsScoped
+                val identity = assertIs<JsFunction>(eval("value => value"))
+                for (literal in listOf("9223372036854775808n", "-9223372036854775809n", "(10n ** 1000n)", "-(10n ** 1000n)")) {
+                    val original = eval("Object($literal)")
+                    val holder = JsObject().apply { this["value"] = original }
+                    val array = JsArray(listOf(original))
+                    val checkOriginal =
+                        assertIs<JsFunction>(
+                            eval(
+                                """
+                                (value, original) => value === original && typeof value === 'object' &&
+                                    typeof value.valueOf() === 'bigint' && value.valueOf() === $literal
+                                """.trimIndent(),
+                            ),
+                        )
+                    for (value in listOf(original, JsValueAlias(original), holder["value"], array[0], identity(original))) {
+                        assertIs<JsObject>(value)
+                        assertFalse(value is JsNumber, literal)
+                        assertTrue(checkOriginal(value, original).boolean, literal)
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun passesPrimitiveAndBoxedBigIntsThroughNativeCallbacks() =
+        runTestWithEventLoop { eventLoop ->
+            jsScoped(context) {
+                if (!eval("typeof BigInt === 'function'").boolean) return@jsScoped
+                val cases = primitiveBigIntCases()
+                var callCount = 0
+                context.globalThis["__bigIntEcho"] =
+                    JsFunction { args ->
+                        callCount++
+                        assertEquals(cases.size + 2, args.size)
+                        cases.forEachIndexed { index, (_, expected) ->
+                            assertPrimitiveBigIntNumber(args[index], expected)
+                        }
+                        args.drop(cases.size).forEach {
+                            assertIs<JsObject>(it)
+                            assertFalse(it is JsNumber)
+                        }
+                        JsArray(args.map { JsValueAlias(it) })
+                    }
+                try {
+                    val result =
+                        eval(
+                            """
+                            (async () => {
+                                const primitives = [${cases.joinToString { it.first }}];
+                                const boxed = [Object(9223372036854775808n), Object(-9223372036854775809n)];
+                                const result = await __bigIntEcho(...primitives, ...boxed);
+                                const failures = [];
+                                primitives.forEach((value, index) => {
+                                    const actual = result[index], expected = Number(value);
+                                    if (typeof actual !== 'number' || !Object.is(actual, expected)) {
+                                        failures.push({kind: 'primitive', index, actual: String(actual),
+                                            expected: String(expected), actualType: typeof actual,
+                                            expectedType: typeof expected, original: String(value)});
+                                    }
+                                });
+                                boxed.forEach((value, i) => {
+                                    const index = primitives.length + i, actual = result[index];
+                                    let unboxed, unboxError;
+                                    try { unboxed = actual.valueOf(); } catch (error) { unboxError = String(error); }
+                                    if (actual !== value || unboxed !== value.valueOf()) {
+                                        failures.push({kind: 'boxed', index, sameObject: actual === value,
+                                            actualType: typeof actual, unboxed: String(unboxed),
+                                            unboxedType: typeof unboxed, expected: String(value.valueOf()), unboxError});
+                                    }
+                                });
+                                return JSON.stringify(failures);
+                            })()
+                            """.trimIndent(),
+                        )
+                    eventLoop.run()
+                    assertEquals("[]", assertIs<JsString>(result.await()).toString())
+                    assertEquals(1, callCount)
+                } finally {
+                    eval("delete globalThis.__bigIntEcho")
+                }
+            }
+        }
 
     @Test
     fun reportsThrownBigIntAsJsException() {
