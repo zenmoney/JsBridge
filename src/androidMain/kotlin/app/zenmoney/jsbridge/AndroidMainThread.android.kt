@@ -2,8 +2,10 @@ package app.zenmoney.jsbridge
 
 import android.os.Handler
 import android.os.Looper
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.runBlocking as coroutineRunBlocking
 
 /**
@@ -15,10 +17,42 @@ import kotlinx.coroutines.runBlocking as coroutineRunBlocking
  */
 fun <T> JsContext.Companion.runBlocking(block: suspend CoroutineScope.() -> T): T = AndroidMainThread.runBlocking(block)
 
+/**
+ * Main-thread dispatcher whose tasks are also processed inside [runBlocking].
+ *
+ * Use for bridge-compatible native calls. This does not process Android Looper messages,
+ * animation frames, or platform callbacks awaited by the dispatched code.
+ */
+val JsContext.Companion.mainDispatcher: CoroutineDispatcher
+    get() = jsContextMainDispatcher
+
+private val jsContextMainDispatcher =
+    object : CoroutineDispatcher() {
+        override fun isDispatchNeeded(context: CoroutineContext): Boolean = Looper.myLooper() != Looper.getMainLooper()
+
+        override fun dispatch(
+            context: CoroutineContext,
+            block: Runnable,
+        ) = AndroidMainThread.dispatch(block)
+    }
+
 internal object AndroidMainThread {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val dispatchLock = Any()
     private var activeEventLoopScope: CoroutineScope? = null
+    private val pendingTasks = linkedSetOf<MainThreadTask>()
+
+    private class MainThreadTask(
+        private val block: Runnable,
+    ) : Runnable {
+        override fun run() {
+            val claimed = synchronized(dispatchLock) { pendingTasks.remove(this) }
+            if (claimed) {
+                mainHandler.removeCallbacks(this)
+                block.run()
+            }
+        }
+    }
 
     fun <T> runBlocking(block: suspend CoroutineScope.() -> T): T =
         coroutineRunBlocking {
@@ -29,7 +63,13 @@ internal object AndroidMainThread {
             val eventLoopScope = this
             val previousEventLoopScope =
                 synchronized(dispatchLock) {
-                    activeEventLoopScope.also { activeEventLoopScope = eventLoopScope }
+                    activeEventLoopScope.also {
+                        activeEventLoopScope = eventLoopScope
+                        // A bridge request can already be queued in Handler when a synchronous
+                        // WebView callback starts. Its caller may be the thread needed by block.
+                        // Transfer those requests too, instead of leaving them behind this callback.
+                        pendingTasks.toList().forEach { task -> eventLoopScope.launch { task.run() } }
+                    }
                 }
             try {
                 eventLoopScope.block()
@@ -37,6 +77,11 @@ internal object AndroidMainThread {
                 synchronized(dispatchLock) {
                     check(activeEventLoopScope === eventLoopScope)
                     activeEventLoopScope = previousEventLoopScope
+                    if (previousEventLoopScope != null) {
+                        // A cancelled inner callback may leave calls needed by its still-running
+                        // outer callback. Its Handler fallback is blocked until that callback exits.
+                        pendingTasks.toList().forEach { task -> previousEventLoopScope.launch { task.run() } }
+                    }
                 }
             }
         }
@@ -48,13 +93,12 @@ internal object AndroidMainThread {
         }
 
         synchronized(dispatchLock) {
-            val eventLoopScope = activeEventLoopScope
-            if (eventLoopScope == null) {
-                mainHandler.post(block)
-            } else {
-                // Register the task before the event loop can be restored and its scope completed.
-                eventLoopScope.launch { block.run() }
-            }
+            val task = MainThreadTask(block)
+            pendingTasks += task
+            // Keep a Handler fallback if the nested coroutine scope is cancelled before
+            // executing this call. Whichever queue claims it first removes the other entry.
+            mainHandler.post(task)
+            activeEventLoopScope?.launch { task.run() }
         }
     }
 }
