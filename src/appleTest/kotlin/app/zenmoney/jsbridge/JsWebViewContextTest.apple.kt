@@ -1,5 +1,9 @@
 package app.zenmoney.jsbridge
 
+import kotlinx.cinterop.ExperimentalForeignApi
+import platform.CoreGraphics.CGRectMake
+import platform.WebKit.WKWebView
+import platform.WebKit.WKWebViewConfiguration
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_queue_create
 import kotlin.test.Test
@@ -15,6 +19,27 @@ class JsWebViewContextTest : JsWebViewContextBaseTest() {
             "globalThis.addEventListener:callback probe",
         )
     override val expectPromiseOverride: Boolean = false
+
+    @Test
+    @OptIn(ExperimentalForeignApi::class)
+    fun staleCommandDoesNotMutateAReplacementContext() {
+        val webView = WKWebView(CGRectMake(0.0, 0.0, 0.0, 0.0), WKWebViewConfiguration())
+        lateinit var oldAdapter: AppleJsWebView
+        JsWebViewContext { contextId ->
+            AppleJsWebView(webView, contextId, disposeWebView = {}).also { oldAdapter = it }
+        }.use { first ->
+            first.evaluateScript("1").close()
+        }
+        JsWebViewContext(webView, disposeWebView = {}).use { replacement ->
+            replacement.evaluateScript("globalThis.sessionValue = 'replacement'").close()
+            oldAdapter.evaluateJavaScript(
+                JsWebViewMessage.Evaluate("globalThis.sessionValue = 'stale'").toScript(),
+            )
+            replacement.evaluateScript("sessionValue").use { value ->
+                assertEquals("replacement", value.toString())
+            }
+        }
+    }
 
     @Test
     fun executesFromBackgroundThread() {

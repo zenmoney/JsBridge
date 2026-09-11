@@ -16,7 +16,6 @@ import platform.darwin.DISPATCH_TIME_NOW
 import platform.darwin.NSObject
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
-import platform.darwin.dispatch_queue_create
 import platform.darwin.dispatch_semaphore_create
 import platform.darwin.dispatch_semaphore_signal
 import platform.darwin.dispatch_semaphore_wait
@@ -31,18 +30,18 @@ fun JsWebViewContext(
     disposeWebView: (WKWebView) -> Unit = WKWebView::stopLoading,
 ): JsWebViewContext =
     JsWebViewContext(
-        createWebView = { AppleJsWebView(webView, disposeWebView) },
+        createWebView = { contextId -> AppleJsWebView(webView, contextId, disposeWebView) },
     )
 
 @OptIn(ExperimentalForeignApi::class)
 @Suppress("FunctionName")
 fun JsWebViewContext(configuration: WKWebViewConfiguration): JsWebViewContext =
-    JsWebViewContext {
-        AppleJsWebView(createWebView(configuration))
+    JsWebViewContext { contextId ->
+        AppleJsWebView(createWebView(configuration), contextId)
     }
 
 @OptIn(ExperimentalForeignApi::class)
-internal actual fun createJsWebView(contextId: Int): JsWebView = AppleJsWebView(createWebView())
+internal actual fun createJsWebView(contextId: Int): JsWebView = AppleJsWebView(createWebView(), contextId)
 
 @OptIn(ExperimentalForeignApi::class)
 private fun createWebView(): WKWebView {
@@ -106,12 +105,15 @@ internal actual class JsWebViewBlockingRequest<T> {
     }
 }
 
-private class AppleJsWebView(
+internal class AppleJsWebView(
     private val webView: WKWebView,
+    private val contextId: Int,
     private val disposeWebView: (WKWebView) -> Unit = WKWebView::stopLoading,
 ) : JsWebView {
-    private val messageQueue = dispatch_queue_create("app.zenmoney.jsbridge.messages", null)
     private val messageHandler = AppleMessageHandler(this)
+
+    @Volatile
+    private var isClosed = false
 
     override var onMessage: (String) -> Unit = {}
 
@@ -126,21 +128,35 @@ private class AppleJsWebView(
 
     override fun close() {
         runOnWebViewThreadBlocking {
+            if (isClosed) return@runOnWebViewThreadBlocking
+            isClosed = true
+            onMessage = {}
             webView.configuration.userContentController.removeScriptMessageHandlerForName(JS_WEB_VIEW_IOS_HANDLER)
             disposeWebView(webView)
         }
     }
 
+    override fun initializeRuntime() {
+        evaluateInSession(createJsWebViewRuntimeScript(contextId))
+    }
+
     override fun evaluateJavaScript(script: String) {
+        // A queued command can reach WebKit after a replacement context installs its runtime.
+        evaluateInSession(
+            "if (window.$JS_WEB_VIEW_BRIDGE_OBJECT && $JS_WEB_VIEW_BRIDGE_OBJECT.sessionId === $contextId) { $script }",
+        )
+    }
+
+    private fun evaluateInSession(script: String) {
         runOnWebViewThread {
-            webView.evaluateJavaScript(script, null)
+            if (!isClosed) webView.evaluateJavaScript(script, null)
         }
     }
 
     fun receiveMessage(message: NSString) {
-        dispatch_async(messageQueue) {
-            onMessage(message.toString())
-        }
+        // Capture completed results before a later WK navigation callback closes the context.
+        // Native function and Promise callbacks dispatch onto their event loop in the protocol handler.
+        if (!isClosed) onMessage(message.toString())
     }
 
     private fun runOnWebViewThread(block: () -> Unit) {
