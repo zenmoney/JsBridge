@@ -1802,6 +1802,15 @@ internal val expressionValueCodecFactorySource: String =
 
 /** Default [JsValue] wire codec used by transport. */
 object ExpressionValueCodec : JsValueCodec {
+    /**
+     * JavaScript factory for this codec, suitable for embedding in a source realm without native callbacks.
+     * Calling the factory returns `createEncoder(configuration)` and `createDecoder(configuration)`.
+     * An encoder returns `{ wire, referenceValues }`; a decoder accepts that wire and resolved references.
+     * Use the same consumer codec configuration as the native transport to preserve its value contract.
+     */
+    val javaScriptFactorySource: String
+        get() = expressionValueCodecFactorySource
+
     internal fun hasTag(
         value: String,
         startIndex: Int,
