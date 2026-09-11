@@ -10,6 +10,7 @@ import app.zenmoney.jsbridge.JsValue
 import app.zenmoney.jsbridge.boolean
 import app.zenmoney.jsbridge.escape
 import app.zenmoney.jsbridge.eval
+import app.zenmoney.jsbridge.get
 import app.zenmoney.jsbridge.invoke
 import app.zenmoney.jsbridge.isClosed
 import app.zenmoney.jsbridge.jsScoped
@@ -51,12 +52,14 @@ class JsValueTransportTest {
             JsContext().use { destinationContext ->
                 JsValueTransportSource<Unit>(sourceContext, codec).use { source ->
                     JsValueTransportDestination<Unit>(destinationContext, codec).use { destination ->
-                        assertEquals(1, codec.createdEncoderCount)
-                        assertEquals(1, codec.createdDecoderCount)
+                        assertEquals(0, codec.createdEncoderCount)
+                        assertEquals(0, codec.createdDecoderCount)
                         val packet = JsValueTransportPacket<Unit>()
                         sourceContext.evaluateScript("'custom codec'").use { value ->
                             source.encode(value, packet)
                         }
+                        assertEquals(1, codec.createdEncoderCount)
+                        assertEquals(0, codec.createdDecoderCount)
                         try {
                             val decoded =
                                 JsScope(destinationContext).use { jsScope ->
@@ -68,6 +71,7 @@ class JsValueTransportTest {
                                     }
                                 }
                             assertTrue(decoded.isClosed)
+                            assertEquals(1, codec.createdDecoderCount)
                         } finally {
                             packet.reset()
                         }
@@ -217,12 +221,12 @@ class JsValueTransportTest {
     }
 
     @Test
-    fun commitFailureClosesResultAndRollsBackBeforeCallerScopeCloses() {
+    fun commitFailurePreventsDecodingAndRollsBackBeforeCallerScopeCloses() {
         JsContext().use { context ->
-            lateinit var decoded: JsValue
+            var decoded: JsValue? = null
             lateinit var resolved: JsValue
-            lateinit var targetScope: JsScope
             lateinit var resolverScope: JsScope
+            var decoderCreationCount = 0
             var rollbackCount = 0
             var failCommit = true
             val codec =
@@ -230,6 +234,7 @@ class JsValueTransportTest {
                     override fun createEncoder(context: JsContext): JsValueEncoder = ExpressionValueCodec.createEncoder(context)
 
                     override fun createDecoder(context: JsContext): JsValueDecoder {
+                        decoderCreationCount++
                         val delegate = ExpressionValueCodec.createDecoder(context)
                         return object : JsValueDecoder {
                             override val context: JsContext = delegate.context
@@ -260,22 +265,21 @@ class JsValueTransportTest {
                     }
 
                     override fun commit() {
-                        assertTrue(resolved.isClosed)
-                        assertFalse(decoded.isClosed)
-                        assertFalse(decoded in targetScope)
+                        assertFalse(resolved.isClosed)
+                        assertEquals(0, decoderCreationCount)
                         if (failCommit) error("commit failed")
                     }
 
                     override fun rollback() {
                         assertTrue(resolved.isClosed)
-                        assertTrue(decoded.isClosed)
+                        assertEquals(null, decoded)
+                        assertFailsWith<IllegalStateException> { resolverScope.context }
                         rollbackCount++
                     }
                 }
             JsValueTransportDestination(context, codec, resolver).use { destination ->
                 JsValueTransportPacket<String>().use { packet ->
                     jsScoped(context) {
-                        targetScope = this
                         val unrelated = eval("({})")
                         for (shouldFail in listOf(true, false)) {
                             failCommit = shouldFail
@@ -287,10 +291,11 @@ class JsValueTransportTest {
                                 assertFailsWith<IllegalStateException> {
                                     destination.decode(packet)
                                 }
-                                assertTrue(decoded.isClosed)
-                                assertFalse(decoded in this)
+                                assertEquals(null, decoded)
+                                assertEquals(0, decoderCreationCount)
                             } else {
                                 assertTrue(destination.decode(packet) in this)
+                                assertEquals(1, decoderCreationCount)
                             }
                             assertEquals(1, rollbackCount)
                             assertFalse(unrelated.isClosed)
@@ -299,7 +304,86 @@ class JsValueTransportTest {
                             packet.reset()
                         }
                     }
-                    assertTrue(decoded.isClosed)
+                    assertTrue(checkNotNull(decoded).isClosed)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun decoderFailureClosesTemporariesWithoutRollingBackResolvedReferences() {
+        JsContext().use { context ->
+            lateinit var resolved: JsValue
+            lateinit var decoderTemporary: JsValue
+            val events = arrayListOf<String>()
+            var failDecode = true
+            val codec =
+                object : JsValueCodec {
+                    override fun createEncoder(context: JsContext): JsValueEncoder = error("Unused encoder")
+
+                    override fun createDecoder(context: JsContext): JsValueDecoder =
+                        object : JsValueDecoder {
+                            override val context: JsContext = context
+
+                            context(scope: JsScope)
+                            override fun decode(
+                                wire: JsValueWire,
+                                resolvedReferenceValues: List<JsValue>,
+                            ): JsValue {
+                                assertEquals(listOf("resolve", "commit"), events)
+                                assertTrue(resolved in scope)
+                                events += "decode"
+                                decoderTemporary = JsArray(resolvedReferenceValues)
+                                if (failDecode) error("decoder failed")
+                                return decoderTemporary
+                            }
+
+                            override fun close() {}
+                        }
+                }
+            val resolver =
+                object : JsValueTransportReferenceValueResolver<String> {
+                    context(scope: JsScope)
+                    override fun resolve(payload: String): JsValue {
+                        events += "resolve"
+                        return JsString(payload).also { resolved = it }
+                    }
+
+                    override fun commit() {
+                        events += "commit"
+                    }
+
+                    override fun rollback() {
+                        events += "rollback"
+                    }
+                }
+            JsValueTransportDestination(context, codec, resolver).use { destination ->
+                JsValueTransportPacket<String>().use { packet ->
+                    jsScoped(context) {
+                        val unrelated = eval("({})")
+                        for (shouldFail in listOf(true, false)) {
+                            failDecode = shouldFail
+                            events.clear()
+                            packet.populate { payloads ->
+                                payloads.addAll(1) { "resolved" }
+                                JsValueWire("opaque")
+                            }
+                            if (shouldFail) {
+                                assertFailsWith<IllegalStateException> { destination.decode(packet) }
+                                assertTrue(decoderTemporary.isClosed)
+                            } else {
+                                val result = assertIs<JsArray>(destination.decode(packet))
+                                assertTrue(result in this)
+                                assertEquals("resolved", result[0].toString())
+                            }
+                            assertTrue(resolved.isClosed)
+                            assertFalse(unrelated.isClosed)
+                            assertEquals(listOf("resolve", "commit", "decode"), events)
+                            assertEquals("resolved", packet.payload(0))
+                            packet.reset()
+                        }
+                    }
+                    assertTrue(decoderTemporary.isClosed)
                 }
             }
         }
