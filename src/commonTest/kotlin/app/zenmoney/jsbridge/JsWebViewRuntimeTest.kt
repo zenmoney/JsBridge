@@ -5,6 +5,54 @@ import kotlin.test.assertEquals
 
 class JsWebViewRuntimeTest {
     @Test
+    fun disposeCallbacksRunOnceAndFailuresDoNotPreventRuntimeCleanup() {
+        assertEquals(
+            "ok",
+            evaluateRuntime(
+                """
+                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                bridge.dispatch(["f", 1], 1);
+                bridge.dispatch(["s", 0, "__callback", messages.pop()[2]], 2);
+                __callback({}).catch(() => {});
+                const state = __diagnostics;
+                check(state.pendingJsCallbacks.size === 1, "test must have a pending native callback");
+                const calls = [];
+                let handlesAvailableDuringDispose = false;
+                bridge.addDisposeCallback(() => {
+                    calls.push("first");
+                    handlesAvailableDuringDispose = state.objectByHandle.size > 0;
+                });
+                const unregister = bridge.addDisposeCallback(() => calls.push("removed"));
+                unregister();
+                unregister();
+                bridge.addDisposeCallback(() => {
+                    calls.push("failure");
+                    throw new Error("cleanup callback failed");
+                });
+                bridge.addDisposeCallback(() => calls.push("last"));
+
+                bridge.dispose();
+                bridge.dispose();
+
+                check(calls.join(",") === "first,failure,last", "registered callbacks must run only once");
+                check(handlesAvailableDuringDispose, "dispose callbacks must run before handles are cleared");
+                check(state.pendingJsCallbacks.size === 0, "failure must not prevent native callback cleanup");
+                check(state.objectByHandle.size === 0, "failure must not prevent object cleanup");
+                check(state.refCountByHandle.size === 0, "failure must not prevent reference count cleanup");
+                check(state.unpublishedHandles.size === 0, "failure must not prevent transit handle cleanup");
+                let lateCalls = 0;
+                const unregisterLate = bridge.addDisposeCallback(() => { lateCalls++; });
+                unregisterLate();
+                bridge.dispose();
+                check(lateCalls === 1, "registration after disposal must clean up immediately");
+                return "ok";
+                """.trimIndent(),
+                inspectHandles = true,
+            ),
+        )
+    }
+
+    @Test
     fun callbackRetainsThisAndRepeatedArgumentsUntilBothOwnersRelease() {
         assertEquals(
             "ok",

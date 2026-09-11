@@ -1,6 +1,7 @@
 package app.zenmoney.jsbridge
 
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.test.TestScope
 import platform.CoreGraphics.CGRectMake
 import platform.WebKit.WKWebView
 import platform.WebKit.WKWebViewConfiguration
@@ -12,6 +13,15 @@ import kotlin.test.assertIs
 
 class JsWebViewContextTest : JsWebViewContextBaseTest() {
     override fun createContext(): JsContext = JsWebViewContext()
+
+    override fun runBrowserTimerTest(block: suspend TestScope.() -> Unit) {
+        val request = JsWebViewBlockingRequest<Unit>()
+        val queue = dispatch_queue_create("app.zenmoney.jsbridge.browser.timers.test", null)
+        dispatch_async(queue) {
+            request.complete(runCatching { super.runBrowserTimerTest(block) })
+        }
+        request.await("browser timer test with active main run loop")
+    }
 
     override val expectedUnhandledRejectionCallbackEvents: List<String> =
         listOf(

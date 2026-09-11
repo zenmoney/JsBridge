@@ -606,6 +606,7 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
         // Native wrappers share one reference; callbacks add temporary references to the same count.
         const refCountByHandle = new Map();
         const pendingJsCallbacks = new Map();
+        const disposeCallbacks = new Set();
         // Handles retained for native transfer while encoding a message. If encoding or post fails,
         // their new native reference or restored strong entry must be rolled back.
         // Any successful post removes its handles, including those prepared by an outer call.
@@ -912,9 +913,22 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
 
         const bridge = {
             sessionId,
+            addDisposeCallback (callback) {
+                if (disposed) {
+                    try { callback(); } catch (_) {}
+                    return () => {};
+                }
+                disposeCallbacks.add(callback);
+                return () => { disposeCallbacks.delete(callback); };
+            },
             dispose () {
                 if (disposed) return;
                 disposed = true;
+                const callbacks = Array.from(disposeCallbacks);
+                disposeCallbacks.clear();
+                for (const callback of callbacks) {
+                    try { callback(); } catch (_) {}
+                }
                 const error = new Error("JsContext is closed");
                 for (const callback of pendingJsCallbacks.values()) callback.reject(error);
                 pendingJsCallbacks.clear();
