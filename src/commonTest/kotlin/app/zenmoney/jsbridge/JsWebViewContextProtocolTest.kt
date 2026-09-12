@@ -397,7 +397,7 @@ class JsWebViewContextProtocolTest {
             evaluated.await()
             context.close()
 
-            assertIs<IllegalStateException>(result.await().exceptionOrNull())
+            assertEquals(IllegalStateException::class, result.await().exceptionOrNull()?.let { it::class })
             assertTrue(webView.isClosed)
         }
 
@@ -420,7 +420,9 @@ class JsWebViewContextProtocolTest {
             evaluated.await()
             val closeJob = context.closeAsync()
 
-            assertEquals("JsContext is closed", result.await().exceptionOrNull()?.message)
+            val failure = result.await().exceptionOrNull()
+            assertEquals(IllegalStateException::class, failure?.let { it::class })
+            assertEquals("JsContext is closed", failure?.message)
             closeJob.join()
             assertTrue(closeJob.isCompleted)
         }

@@ -14,7 +14,8 @@ private class JsWebViewThrownError(
 
 private const val NATIVE_EXCEPTION_TAG = "app.zenmoney.jsbridge.nativeException"
 
-private typealias JsWebViewPendingRequests = MutableIntObjectMap<(Result<JsWebViewProtocolValue>) -> Unit>
+private typealias JsWebViewRequestCompletion = (result: Result<JsWebViewProtocolValue>, nativeFailure: Boolean) -> Unit
+private typealias JsWebViewPendingRequests = MutableIntObjectMap<JsWebViewRequestCompletion>
 
 class JsWebViewContext internal constructor(
     createWebView: (contextId: Int) -> JsWebView,
@@ -449,9 +450,21 @@ class JsWebViewContext internal constructor(
         debug: String,
     ): JsWebViewProtocolValue {
         val request = JsWebViewBlockingRequest<JsWebViewProtocolValue>()
-        val id = executeWebViewMessage(message, request::complete)
+        var nativeFailure = false
+        val id =
+            executeWebViewMessage(message) { result, failedNativeExecution ->
+                // Publish the failure origin together with the result through the blocking request.
+                nativeFailure = failedNativeExecution
+                request.complete(result)
+            }
         try {
             return request.await(debug)
+        } catch (error: Throwable) {
+            // Native execution failed without a protocol reply, so any refcount prefix may or may not
+            // have run. Close instead of retrying that batch. This runs on the context's dispatcher,
+            // where completed synchronous replies have already been decoded into their scopes.
+            if (nativeFailure) close()
+            throw error
         } finally {
             withPendingRequests {
                 it.remove(id)
@@ -461,7 +474,7 @@ class JsWebViewContext internal constructor(
 
     private fun executeWebViewMessage(
         message: JsWebViewMessage,
-        complete: (Result<JsWebViewProtocolValue>) -> Unit,
+        complete: JsWebViewRequestCompletion,
     ): Int {
         var id = -1
         withPendingRequests {
@@ -471,7 +484,7 @@ class JsWebViewContext internal constructor(
             }
         }
         if (id < 0) {
-            complete(Result.failure(IllegalStateException("JsContext is closed")))
+            complete(Result.failure(IllegalStateException("JsContext is closed")), false)
             return -1
         }
         try {
@@ -514,7 +527,11 @@ class JsWebViewContext internal constructor(
             }
         try {
             val script = if (requestId == 0) message.toScript(changes) else message.toScript(requestId, changes)
-            initializedWebView.evaluateJavaScript(script)
+            initializedWebView.evaluateJavaScript(script) { error ->
+                // A completed reply has already removed its request. A later native completion
+                // must not replace that reply or invalidate its context.
+                if (requestId != 0) completeRequest(requestId, Result.failure(error), nativeFailure = true)
+            }
         } catch (e: Throwable) {
             // Decode the saved batch only on submission failure; the normal path reuses the map.
             changes?.forEachRefCountChange(::enqueueHandleRefCountChange)
@@ -525,21 +542,22 @@ class JsWebViewContext internal constructor(
     private fun completeRequest(
         requestId: Int,
         result: Result<JsWebViewProtocolValue>,
+        nativeFailure: Boolean = false,
     ) {
         val request =
             withPendingRequests {
                 it.remove(requestId)
             }
-        request?.invoke(result)
+        request?.invoke(result, nativeFailure)
     }
 
-    private fun cancelPendingRequests(requests: List<(Result<JsWebViewProtocolValue>) -> Unit>) {
+    private fun cancelPendingRequests(requests: List<JsWebViewRequestCompletion>) {
         requests.forEach {
-            it(Result.failure(IllegalStateException("JsContext is closed")))
+            it(Result.failure(IllegalStateException("JsContext is closed")), false)
         }
     }
 
-    private fun takePendingRequests(): List<(Result<JsWebViewProtocolValue>) -> Unit> =
+    private fun takePendingRequests(): List<JsWebViewRequestCompletion> =
         withPendingRequests { requests ->
             buildList(requests.size) {
                 requests.forEachValue { add(it) }

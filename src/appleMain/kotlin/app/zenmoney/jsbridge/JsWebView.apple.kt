@@ -5,6 +5,7 @@ import platform.CoreFoundation.CFRunLoopRunInMode
 import platform.CoreFoundation.kCFRunLoopDefaultMode
 import platform.CoreGraphics.CGRectMake
 import platform.Foundation.NSDate
+import platform.Foundation.NSNumber
 import platform.Foundation.NSString
 import platform.Foundation.NSThread
 import platform.WebKit.WKScriptMessage
@@ -145,6 +146,36 @@ internal class AppleJsWebView(
         evaluateInSession(
             "if (window.$JS_WEB_VIEW_BRIDGE_OBJECT && $JS_WEB_VIEW_BRIDGE_OBJECT.sessionId === $contextId) { $script }",
         )
+    }
+
+    override fun evaluateJavaScript(
+        script: String,
+        onFailure: (Throwable) -> Unit,
+    ) {
+        runOnWebViewThread {
+            if (isClosed) {
+                onFailure(IllegalStateException("JsWebView is closed"))
+                return@runOnWebViewThread
+            }
+            val guardedScript =
+                "(() => { if (!window.$JS_WEB_VIEW_BRIDGE_OBJECT || " +
+                    "$JS_WEB_VIEW_BRIDGE_OBJECT.sessionId !== $contextId) return false; $script; return true; })()"
+            webView.evaluateJavaScript(guardedScript) { result, error ->
+                when {
+                    error != null -> {
+                        onFailure(IllegalStateException(error.localizedDescription))
+                    }
+
+                    (result as? NSNumber)?.boolValue == false -> {
+                        onFailure(JsWebViewContextDetachedException())
+                    }
+
+                    (result as? NSNumber)?.boolValue != true -> {
+                        onFailure(IllegalStateException("Unexpected JsWebView native execution result"))
+                    }
+                }
+            }
+        }
     }
 
     private fun evaluateInSession(script: String) {

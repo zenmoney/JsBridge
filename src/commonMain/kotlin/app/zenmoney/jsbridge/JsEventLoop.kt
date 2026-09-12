@@ -711,28 +711,34 @@ class JsEventLoop(
                             null
                         }
                     val tickShouldContinue =
-                        jsScoped(tick.context) {
-                            val result =
-                                if (timerIdForTick != null) {
-                                    tick(JsNumber(timerIdForTick))
+                        try {
+                            jsScoped(tick.context) {
+                                val result =
+                                    if (timerIdForTick != null) {
+                                        tick(JsNumber(timerIdForTick))
+                                    } else {
+                                        tick.invoke()
+                                    }
+                                if (result is JsString) {
+                                    val state = result.string
+                                    var revision = 0L
+                                    var index = 2
+                                    // The attachment returns a canonical "didRun:revision:pending" snapshot.
+                                    // Parse in place without a list or substring allocations on every tick.
+                                    while (state[index] != ':') {
+                                        revision = revision * 10 + (state[index] - '0')
+                                        index++
+                                    }
+                                    updateObservedTimers(tick.context, revision, state[index + 1] == '1')
+                                    state[0] == '1'
                                 } else {
-                                    tick.invoke()
+                                    result.boolean
                                 }
-                            if (result is JsString) {
-                                val state = result.string
-                                var revision = 0L
-                                var index = 2
-                                // The attachment returns a canonical "didRun:revision:pending" snapshot.
-                                // Parse in place without a list or substring allocations on every tick.
-                                while (state[index] != ':') {
-                                    revision = revision * 10 + (state[index] - '0')
-                                    index++
-                                }
-                                updateObservedTimers(tick.context, revision, state[index + 1] == '1')
-                                state[0] == '1'
-                            } else {
-                                result.boolean
                             }
+                        } catch (_: JsWebViewContextDetachedException) {
+                            // The failed RPC closed this detached context. Retire its tick and
+                            // continue processing the remaining attachments.
+                            false
                         }
                     if (timerIdForTick != null) {
                         timerId = null

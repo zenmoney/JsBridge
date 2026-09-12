@@ -13,6 +13,25 @@ import kotlin.test.assertTrue
 
 class JsWebViewTimerObservationProtocolTest {
     @Test
+    fun aLostWebViewDuringTickDoesNotCancelOtherContextsOrTheirTimers() =
+        runTest {
+            withTimerWebView { context, eventLoop, webView ->
+                JsEngineContext().use { plugin ->
+                    eventLoop.attachTo(plugin)
+                    plugin.evaluateScript("globalThis.timerFinished = false; setTimeout(() => { timerFinished = true; }, 1)").close()
+                    webView.failNextRequestAsDetached = true
+
+                    withTimeout(1_000) { eventLoop.run() }
+
+                    assertTrue(context.isClosed)
+                    assertFalse(plugin.isClosed)
+                    assertTrue(plugin.evaluateScript("timerFinished").use { it.boolean })
+                    assertTrue(eventLoop.coroutineContext[Job]!!.isActive)
+                }
+            }
+        }
+
+    @Test
     fun notificationFromFailedAttachmentDoesNotRegisterWorkAfterReattachment() =
         runTest {
             withTimerWebView(attachOnEntry = false) { context, eventLoop, webView ->
@@ -182,6 +201,7 @@ private class TimerProtocolWebView(
     private var timerListenerId: String? = null
     var failTickExtraction = false
     var failNextEvaluation = false
+    var failNextRequestAsDetached = false
     var failedEvaluations = 0
         private set
 
@@ -211,6 +231,18 @@ private class TimerProtocolWebView(
             error("WebView no longer accepts the queued disposal command")
         }
         backing.evaluateScript(script).close()
+    }
+
+    override fun evaluateJavaScript(
+        script: String,
+        onFailure: (Throwable) -> Unit,
+    ) {
+        if (failNextRequestAsDetached) {
+            failNextRequestAsDetached = false
+            onFailure(JsWebViewContextDetachedException())
+        } else {
+            evaluateJavaScript(script)
+        }
     }
 
     override fun close() {}
