@@ -17,6 +17,20 @@ import kotlin.test.assertTrue
 
 class JsWebViewContextProtocolTest {
     @Test
+    fun deallocationBeforeEventLoopAttachmentDoesNotEscapeTheNativeCallback() {
+        val webView =
+            FakeJsWebView { script ->
+                val requestId = requestIdRegex.find(script)?.groupValues?.get(1) ?: return@FakeJsWebView
+                onMessage("""["r",$requestId,42]""")
+            }
+        JsWebViewContext(webView).use { context ->
+            context.evaluateScript("42").close()
+            webView.onMessage("""["d",7]""")
+            assertEquals(42, context.evaluateScript("42").use { it.int })
+        }
+    }
+
+    @Test
     fun evalFailureWhileReadingErrorDataPreservesTheOriginalException() {
         var requestCount = 0
         var nextHandle = 1

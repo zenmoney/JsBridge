@@ -2,6 +2,7 @@ package app.zenmoney.jsbridge
 
 import androidx.collection.MutableIntObjectMap
 import androidx.collection.mutableIntIntMapOf
+import androidx.collection.mutableIntListOf
 import androidx.collection.mutableIntObjectMapOf
 import app.zenmoney.jsbridge.serialization.JsValueWire
 import co.touchlab.stately.concurrency.Lock
@@ -34,6 +35,7 @@ class JsWebViewContext internal constructor(
     private var requestId = 1
     private val pendingRequestsLock = Lock()
     private val pendingRequests: JsWebViewPendingRequests = mutableIntObjectMapOf()
+    private val pendingDeallocatedHandles = mutableIntListOf()
     private val pendingHandleRefCountChanges = mutableIntIntMapOf()
 
     init {
@@ -98,9 +100,13 @@ class JsWebViewContext internal constructor(
                 }
 
                 override fun onDeallocate(handle: Int) {
-                    dispatchWebViewNativeCallback {
-                        onWebViewValueDeallocated(handle)
+                    pendingRequestsLock.withLock {
+                        if (core.isClosed) return
+                        pendingDeallocatedHandles.add(handle)
                     }
+                    // GC notifications also arrive during synchronous use, before an event loop
+                    // is attached. Only touch context-owned maps on its thread, never WebKit's callback thread.
+                    core.eventLoop?.launch { drainDeallocatedHandles() }
                 }
             },
         )
@@ -294,7 +300,10 @@ class JsWebViewContext internal constructor(
             functionCallbackIds.clear()
             tagsByHandle.clear()
             refCounts.clear()
-            pendingRequestsLock.withLock { pendingHandleRefCountChanges.clear() }
+            pendingRequestsLock.withLock {
+                pendingHandleRefCountChanges.clear()
+                pendingDeallocatedHandles.clear()
+            }
             closeWebView()
         }
     }
@@ -322,6 +331,13 @@ class JsWebViewContext internal constructor(
             retainWebViewHandle(value.handle)
         }
         core.addValue(value)
+    }
+
+    private fun drainDeallocatedHandles() {
+        pendingRequestsLock.withLock {
+            pendingDeallocatedHandles.forEach(::onWebViewValueDeallocated)
+            pendingDeallocatedHandles.clear()
+        }
     }
 
     private fun onWebViewValueDeallocated(handle: Int) {
@@ -463,6 +479,7 @@ class JsWebViewContext internal constructor(
         message: JsWebViewMessage,
         debug: String,
     ): JsWebViewProtocolValue {
+        drainDeallocatedHandles()
         val request = JsWebViewBlockingRequest<JsWebViewProtocolValue>()
         var nativeFailure = false
         val id =
