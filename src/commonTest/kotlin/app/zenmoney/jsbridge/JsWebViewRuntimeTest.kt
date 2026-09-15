@@ -5,6 +5,114 @@ import kotlin.test.assertEquals
 
 class JsWebViewRuntimeTest {
     @Test
+    fun acornRejectsInvalidScriptsBeforeNativeExecution() {
+        assertEquals(
+            "ok",
+            evaluateRuntime(
+                """
+                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const invalidScripts = ["let = ;", "let x; let x;", "return 42;", "const f = () => { let = ; }"];
+                for (let index = 0; index < invalidScripts.length; index++) {
+                    const requestId = index + 1;
+                    bridge.dispatch(["w", "globalThis.__invalidScriptRan = true; " + invalidScripts[index]], requestId);
+                    check(nativeExecutions === 0, "Acorn errors must not request native execution");
+                    check(messages.length === 1, "parsing must send exactly one final error response");
+                    const response = messages.pop();
+                    check(response[0] === "e" && response[1] === requestId, "parsing must fail the original request");
+                    bridge.dispatch(["s", 0, "__syntaxError", response[2]], 20);
+                    messages.pop();
+                    check(__syntaxError.name === "SyntaxError", "preserve the Acorn syntax error");
+                    check(globalThis.__invalidScriptRan === undefined, "invalid source must have no side effects");
+                }
+                bridge.dispatch(["w", "42"], 30);
+                const success = messages.pop();
+                check(nativeExecutions === 1 && success[0] === "r" && success[2] === 42, "valid source must still execute");
+                bridge.dispatch(["w", "throw 7"], 31);
+                const failure = messages.pop();
+                check(nativeExecutions === 2 && failure[0] === "e" && failure[2] === 7, "runtime errors require execution");
+                return "ok";
+                """.trimIndent(),
+            ),
+        )
+    }
+
+    @Test
+    fun withStatementsPreserveCompletionsAndReleaseTemporaryState() {
+        assertEquals(
+            "ok",
+            evaluateRuntime(
+                """
+                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                Object.defineProperty(globalThis, "__appZenmoneyCompletionState1", { value: 123, configurable: true });
+                const keys = Object.getOwnPropertyNames(globalThis).join("\n");
+                const proxy = "new Proxy({}, { has: () => true, get: () => 0 })";
+                const scripts = [
+                    "with (" + proxy + ") 42;",
+                    "with (" + proxy + ") { try { 42; } finally { 7; } }",
+                    "with (" + proxy + ") { try { throw 42; } catch (error) { error; } }",
+                    "outer: { with (" + proxy + ") { 42; break outer; } }",
+                    "with ({}) with (" + proxy + ") 42;",
+                    "with (" + proxy + ") throw 7;"
+                ];
+                for (const script of scripts) {
+                    let expected, failed = false;
+                    try { expected = nativeEvaluate("{\n" + script + "\n}"); }
+                    catch (error) { expected = error; failed = true; }
+                    bridge.dispatch(["w", script], 1);
+                    const response = messages.pop();
+                    check(response[0] === (failed ? "e" : "r") && response[2] === expected, "with completion differs: " + script);
+                    check(Object.getOwnPropertyNames(globalThis).join("\n") === keys, "temporary state must be removed on success and failure");
+                    check(globalThis.__appZenmoneyCompletionState1 === 123, "existing page properties must be preserved");
+                }
+                return "ok";
+                """.trimIndent(),
+            ),
+        )
+    }
+
+    @Test
+    fun nativeEvaluationPreservesScriptCompletionValues() {
+        assertEquals(
+            "ok",
+            evaluateRuntime(
+                """
+                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const scripts = [
+                    "", ";", "42;", "(42); // trailing comment", "1; var x;", "1; let x;",
+                    "1; {}", "1; { 2; var x; }", "1; if (false) 2", "1; if (true) {}",
+                    "1; if (true) 2; else 3", "1; while (false) 2", "1; for (let i=0; i<3; i++) i",
+                    "1; for (const x of [2, 3]) x", "for (let i=0; i<3; i++) { i; if (i === 1) break; }",
+                    "1; label: {}", "outer: inner: for (let i=0; i<2; i++) { i; continue outer; }",
+                    "outer: for (let i=0; i<2; i++) { 42; break outer; }",
+                    "1; switch (0) { case 1: 2; break; }", "switch (0) { case 0: 2; case 1: 3; }",
+                    "1; try {} catch (e) {}", "try { 1; } finally { 2; }", "try { throw 3; } catch (e) { e; }",
+                    "try { 1; } finally { try { 2; } finally { 3; } }",
+                    "outer: { try { 1; } finally { 2; break outer; } }",
+                    "outer: { try { 1; break outer; } finally { 2; } }",
+                    "1; with ({x: 42}) x", "1; with ({}) {}",
+                    "let undefined = 42; if (false) 7;", "let undefined = 42; while (false) 7;",
+                    "let undefined = 42; try {} finally {}", "let undefined = 42; try { throw 7; } catch (error) {}",
+                    "let undefined = 42; switch (0) {}", "let undefined = 42; with ({}) {}",
+                    "const pattern = /[;{}]/; pattern.test(';')", "`a;\u0024{1 + 2}`",
+                    "1\n2", "(function () { return 42; })()", "let x = 1; (() => ++x)()",
+                    "var __appZenmoneyCompletionValue = 42; __appZenmoneyCompletionValue",
+                    "1; function f() {}", "1; class C {}", "1; debugger;"
+                ];
+                for (const script of scripts) {
+                    const expected = nativeEvaluate("{\n" + script + "\n}");
+                    bridge.dispatch(["w", script], 1);
+                    const response = messages.pop();
+                    check(response[0] === "r", "evaluation failed: " + script);
+                    const expectedWire = expected === undefined ? '["u"]' : JSON.stringify(expected);
+                    check(JSON.stringify(response[2]) === expectedWire, "completion differs: " + script);
+                }
+                return "ok";
+                """.trimIndent(),
+            ),
+        )
+    }
+
+    @Test
     fun disposeCallbacksRunOnceAndFailuresDoNotPreventRuntimeCleanup() {
         assertEquals(
             "ok",
@@ -110,7 +218,7 @@ class JsWebViewRuntimeTest {
                     };
                     bridge.dispatch(["r*", [handle, -1]]);
                     if (reacquire) {
-                        bridge.dispatch(["e", "__value"], 4);
+                        bridge.dispatch(["w", "__value"], 4);
                         check(messages.pop()[2][1] === encoded[1], "re-export must preserve the handle");
                         bridge.dispatch(["r*", [handle, 1]]);
                     }
@@ -137,7 +245,7 @@ class JsWebViewRuntimeTest {
                 bridge.dispatch(["f", 1], 1);
                 bridge.dispatch(["s", 0, "__callback", messages.pop()[2]], 2);
                 globalThis.__value = {};
-                bridge.dispatch(["e", "__value"], 3);
+                bridge.dispatch(["w", "__value"], 3);
                 const encoded = messages.pop()[2];
                 const handle = encoded[1] % 4294967296;
                 __callback(__value).catch(() => {});
@@ -166,10 +274,10 @@ class JsWebViewRuntimeTest {
                 """
                 const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
                 globalThis.__value = {};
-                bridge.dispatch(["e", "__value"], 1);
+                bridge.dispatch(["w", "__value"], 1);
                 const encoded = messages.pop()[2];
                 const handle = encoded[1] % 4294967296;
-                bridge.dispatch(["e", "__value"], 2);
+                bridge.dispatch(["w", "__value"], 2);
                 check(messages.pop()[2][1] === encoded[1], "aliases must share a handle");
                 bridge.dispatch(["r*", [handle, -1]]);
                 bridge.dispatch(["s", 0, "__probe", encoded], 3);
@@ -192,7 +300,7 @@ class JsWebViewRuntimeTest {
                 """
                 const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
                 globalThis.__value = {};
-                bridge.dispatch(["e", "__value"], 1);
+                bridge.dispatch(["w", "__value"], 1);
                 const encoded = messages.pop()[2];
                 const handle = encoded[1] % 4294967296;
                 bridge.dispatch(["r*", [handle, 0]]);
@@ -200,7 +308,7 @@ class JsWebViewRuntimeTest {
                 check(__probe === __value, "cancelled release/retain must preserve native ownership");
 
                 bridge.dispatch(["r*", [handle, -1]]);
-                bridge.dispatch(["e", "__value"], 3);
+                bridge.dispatch(["w", "__value"], 3);
                 check(messages.pop()[2][1] === encoded[1], "re-export must preserve the handle");
                 bridge.dispatch(["s", 0, "__probe", encoded], 4);
                 check(__probe === __value, "re-export must hold the value in transit before native responds");
@@ -215,14 +323,14 @@ class JsWebViewRuntimeTest {
     }
 
     @Test
-    fun evalRestoresErrorStateAfterNestedCallsAndSyntaxErrors() {
+    fun nativeEvaluationPreservesNestedErrorsAndGlobalDeclarations() {
         assertEquals(
             "ok",
             evaluateRuntime(
                 """
                 const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
                 const evaluate = (script, id) => {
-                    bridge.dispatch(["e", script], id);
+                    bridge.dispatch(["w", script], id);
                     return messages.pop();
                 };
                 const assertNoErrorSlot = () => check(
@@ -239,28 +347,9 @@ class JsWebViewRuntimeTest {
                 check(__globalEvalValue === 41, "var must remain global");
 
                 // The inner request posts its error before the outer request completes successfully.
-                const nested = "globalThis.$JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(['e', 'throw 7'], 6); 42";
+                const nested = "globalThis.$JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(['w', 'throw 7'], 6); 42";
                 check(evaluate(nested, 5)[2] === 42, "inner failure must not fail the outer eval");
                 check(messages.pop()[2] === 7, "inner failure must retain its own value");
-                assertNoErrorSlot();
-
-                // Re-enter after the outer evaluation has stored its thrown value.
-                const originalEval = globalThis.eval;
-                let reenter = true;
-                globalThis.eval = function (source) {
-                    const value = (0, originalEval)(source);
-                    if (reenter) {
-                        reenter = false;
-                        bridge.dispatch(["e", "throw 'inner'"], 8);
-                    }
-                    return value;
-                };
-                try {
-                    check(evaluate("throw 'outer'", 7)[2] === "outer", "nested eval must restore the outer error");
-                    check(messages.pop()[2] === "inner", "nested error value");
-                } finally {
-                    globalThis.eval = originalEval;
-                }
                 assertNoErrorSlot();
                 globalThis.__appZenmoneyEvalError = undefined;
                 check(evaluate("42", 9)[2] === 42, "stale error state must not affect success");
@@ -309,7 +398,7 @@ class JsWebViewRuntimeTest {
 
                 // Previously exported handles keep their identity after a failed re-export.
                 globalThis.__value = value;
-                bridge.dispatch(["e", "__value"], 3);
+                bridge.dispatch(["w", "__value"], 3);
                 const reexported = messages.pop()[2][1] % 4294967296;
                 check(reexported === handle, "published handle identity must survive native release");
                 bridge.dispatch(["r*", [handle, 0]]);
@@ -322,7 +411,7 @@ class JsWebViewRuntimeTest {
                 try {
                     __callback.call({}, {}, {}).catch(() => {});
                     checkClean();
-                    try { bridge.dispatch(["e", "({})"], 4); } catch (_) {}
+                    try { bridge.dispatch(["w", "({})"], 4); } catch (_) {}
                     checkClean();
                 } finally {
                     native.postMessage = originalPost;
@@ -385,10 +474,10 @@ class JsWebViewRuntimeTest {
                 globalThis.__value = { get then() {
                     if (reenter) {
                         reenter = false;
-                        bridge.dispatch(["e", "__value"], 10);
+                        bridge.dispatch(["w", "__value"], 10);
                     }
                 }};
-                bridge.dispatch(["e", "__value"], 3);
+                bridge.dispatch(["w", "__value"], 3);
                 const handle = messages.pop()[2][1] % 4294967296;
                 bridge.dispatch(["r*", [handle, -1]]);
                 messages.length = 0;
@@ -433,7 +522,7 @@ class JsWebViewRuntimeTest {
                     const responses = [];
                     try {
                         for (let index = 0; index < scripts.length; index++) {
-                            bridge.dispatch(["e", scripts[index]], index + 2);
+                            bridge.dispatch(["w", scripts[index]], index + 2);
                             responses.push(messages.pop());
                         }
                         bridge.dispatch(["y?", bytesHandle], 10);
@@ -476,8 +565,16 @@ class JsWebViewRuntimeTest {
                     (() => {
                         globalThis.window = globalThis;
                         const messages = [];
+                        const nativeEvaluate = globalThis.eval;
+                        let nativeExecutions = 0;
                         globalThis.$JS_WEB_VIEW_ANDROID_INTERFACE = {
-                            postMessage(message) { messages.push(JSON.parse(message)); }
+                            postMessage(message) {
+                                const decoded = JSON.parse(message);
+                                if (decoded[0] === "x") {
+                                    nativeExecutions++;
+                                    (0, nativeEvaluate)(decoded[2]);
+                                } else messages.push(decoded);
+                            }
                         };
                         $runtime
                         const check = (condition, message) => { if (!condition) throw new Error(message); };

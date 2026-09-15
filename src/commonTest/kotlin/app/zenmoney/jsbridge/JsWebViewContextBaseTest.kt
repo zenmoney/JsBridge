@@ -22,6 +22,74 @@ abstract class JsWebViewContextBaseTest : JsContextTest() {
     protected open fun runBrowserTimerTest(block: suspend TestScope.() -> Unit) = runTest { block() }
 
     @Test
+    fun evaluatesScriptsWithAValueTransformInTheProvidedScope() {
+        val webViewContext = assertIs<JsWebViewContext>(context)
+        val result =
+            jsScoped(webViewContext) {
+                val transform = eval("value => ({ answer: value + 1 })") as JsFunction
+                val result = webViewContext.eval("let value = 40; if (true) value + 1;", transform) as JsObject
+                assertEquals(42, result["answer"].int)
+                assertTrue(result in this)
+                val fail = eval("() => { throw new RangeError('transform failed'); }") as JsFunction
+                assertEquals("RangeError", assertFailsWith<JsException> { webViewContext.eval("42", fail) }.name)
+                val syntaxFailure = assertFailsWith<JsException> { webViewContext.eval("let = ;", fail) }
+                assertFalse(syntaxFailure.message.orEmpty().contains("transform failed"))
+                assertEquals(
+                    "TypeError",
+                    assertFailsWith<JsException> { webViewContext.eval("throw new TypeError('script failed')", fail) }.name,
+                )
+                assertEquals(43, eval("43").int)
+                result
+            }
+        assertTrue(result.isClosed)
+    }
+
+    @Test
+    fun doesNotAwaitScriptOrTransformPromises() {
+        jsScoped(context) {
+            val webViewContext = assertIs<JsWebViewContext>(context)
+            val inspect = eval("value => value instanceof Promise ? 42 : 0") as JsFunction
+            assertEquals(42, webViewContext.eval("new Promise(() => {})", inspect).int)
+            val createPromise = eval("() => new Promise(() => {})") as JsFunction
+            assertIs<JsPromise>(webViewContext.eval("42", createPromise))
+        }
+    }
+
+    @Test
+    fun rejectsTransformsAndScopesFromAnotherContextBeforeExecutingScript() {
+        val webViewContext = assertIs<JsWebViewContext>(context)
+        JsEngineContext().use { otherContext ->
+            jsScoped(webViewContext) {
+                val transform = eval("value => value") as JsFunction
+                eval("globalThis.transformScriptExecuted = false")
+                jsScoped(otherContext) {
+                    assertFailsWith<IllegalArgumentException> {
+                        webViewContext.eval("globalThis.transformScriptExecuted = true", transform)
+                    }
+                    val foreignTransform = eval("value => value") as JsFunction
+                    jsScoped(webViewContext) {
+                        assertFailsWith<IllegalArgumentException> {
+                            webViewContext.eval("globalThis.transformScriptExecuted = true", foreignTransform)
+                        }
+                    }
+                }
+                assertFalse(eval("transformScriptExecuted").boolean)
+            }
+        }
+    }
+
+    @Test
+    fun executesWhenPageDisablesEval() {
+        context.evaluateScript("globalThis.eval = () => { throw new EvalError('Page disabled eval'); }").close()
+
+        assertEquals(42, context.evaluateScript("42").use { it.int })
+        val exception = assertFailsWith<JsException> { context.evaluateScript("throw new Error('original failure')") }
+        assertEquals("original failure", exception.message)
+        assertEquals("Error", exception.name)
+        assertFalse(context.isClosed)
+    }
+
+    @Test
     fun reportsOriginalErrorWhenItsPropertiesThrow() {
         val exception =
             assertFailsWith<JsException> {

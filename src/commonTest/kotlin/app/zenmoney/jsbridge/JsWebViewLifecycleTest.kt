@@ -55,7 +55,7 @@ class JsWebViewLifecycleTest {
             }
             JsWebViewContext(webView).use { replacement ->
                 assertEquals(42, replacement.evaluateScript("6 * 7").use { it.int })
-                backing.evaluateScript("__oldBridge.dispose(); __oldBridge.dispatch(['e', 'throw 1'], 999)").close()
+                backing.evaluateScript("__oldBridge.dispose(); __oldBridge.dispatch(['w', 'throw 1'], 999)").close()
                 assertEquals(43, replacement.evaluateScript("43").use { it.int })
             }
         }
@@ -94,7 +94,7 @@ class JsWebViewLifecycleTest {
                                     } catch (error) {
                                         late = error.message;
                                     }
-                                    bridge.dispatch(["e", "throw 1"], 3);
+                                    bridge.dispatch(["w", "throw 1"], 3);
                                     if (messages.length !== messageCount) throw new Error("Closed runtime posted a message");
                                     return Promise.all([pending, late]).then(values => values.join(";"));
                                 })()

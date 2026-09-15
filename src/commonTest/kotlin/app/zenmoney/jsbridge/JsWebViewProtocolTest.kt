@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
 class JsWebViewProtocolTest {
     @Test
     fun webViewRuntimeEmbedsOnlyMinimalExpressionCore() {
-        assertTrue(jsWebViewRuntimeScript.length < 36_000)
+        assertTrue(jsWebViewRuntimeScript.length - jsWebViewAcornFactorySource.length < 42_000)
         assertTrue("function encodeObject(" !in jsWebViewRuntimeScript)
         assertTrue("function encodeDate(" !in jsWebViewRuntimeScript)
         assertTrue("typedArrayDefinitions" !in jsWebViewRuntimeScript)
@@ -55,26 +55,28 @@ class JsWebViewProtocolTest {
                         globalThis.__webViewProtocolMessages = [];
                         globalThis.$JS_WEB_VIEW_ANDROID_INTERFACE = {
                             postMessage(message) {
-                                globalThis.__webViewProtocolMessages.push(message);
+                                const decoded = JSON.parse(message);
+                                if (decoded[0] === "x") (0, eval)(decoded[2]);
+                                else globalThis.__webViewProtocolMessages.push(message);
                             }
                         };
                         delete globalThis.$JS_WEB_VIEW_BRIDGE_OBJECT;
                         $jsWebViewRuntimeScript
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "null"], 1);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "false"], 2);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "true"], 3);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "2.5"], 4);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "'line\\u2028separator'"], 5);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "undefined"], 6);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "NaN"], 7);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "Infinity"], 8);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "-Infinity"], 9);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "-0"], 10);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "9007199254740993n"], 11);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "null"], 1);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "false"], 2);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "true"], 3);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "2.5"], 4);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "'line\\u2028separator'"], 5);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "undefined"], 6);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "NaN"], 7);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "Infinity"], 8);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "-Infinity"], 9);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "-0"], 10);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "9007199254740993n"], 11);
                         $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["s", 0, "__decodedValue", true], 12);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "globalThis.__decodedValue"], 13);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "globalThis.__decodedValue"], 13);
                         $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["s", 0, "__decodedValue", ["n", "-0"]], 14);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["e", "Object.is(globalThis.__decodedValue, -0)"], 15);
+                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "Object.is(globalThis.__decodedValue, -0)"], 15);
                         globalThis.__webViewProtocolMessages.join("\n");
                         """.trimIndent(),
                     ) as JsString

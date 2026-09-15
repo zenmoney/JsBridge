@@ -16,7 +16,14 @@ private class JsWebViewThrownError(
 private const val NATIVE_EXCEPTION_TAG = "app.zenmoney.jsbridge.nativeException"
 
 private typealias JsWebViewRequestCompletion = (result: Result<JsWebViewProtocolValue>, nativeFailure: Boolean) -> Unit
-private typealias JsWebViewPendingRequests = MutableIntObjectMap<JsWebViewRequestCompletion>
+
+private class JsWebViewPendingRequest(
+    val complete: JsWebViewRequestCompletion,
+) {
+    // Set before submitting the wrapped script to reject duplicate wrapping replies and late preparation failures.
+    var evaluationStarted = false
+}
+private typealias JsWebViewPendingRequests = MutableIntObjectMap<JsWebViewPendingRequest>
 
 class JsWebViewContext internal constructor(
     createWebView: (contextId: Int) -> JsWebView,
@@ -108,6 +115,29 @@ class JsWebViewContext internal constructor(
                     // is attached. Only touch context-owned maps on its thread, never WebKit's callback thread.
                     core.eventLoop?.launch { drainDeallocatedHandles() }
                 }
+
+                override fun onScriptWrapped(
+                    requestId: Int,
+                    wrappedScript: String,
+                ) {
+                    // The page only parses the source. The native WebView compiles and executes it,
+                    // so CSP never needs to permit eval or Function in the page.
+                    val shouldExecute =
+                        withPendingRequests {
+                            val request = it[requestId] ?: return@withPendingRequests false
+                            if (request.evaluationStarted) return@withPendingRequests false
+                            request.evaluationStarted = true
+                            true
+                        }
+                    if (!shouldExecute) return
+                    try {
+                        webView?.evaluateJavaScript(wrappedScript) { error ->
+                            completeRequest(requestId, Result.failure(error), nativeFailure = true)
+                        }
+                    } catch (error: Throwable) {
+                        completeRequest(requestId, Result.failure(error), nativeFailure = true)
+                    }
+                }
             },
         )
 
@@ -124,7 +154,31 @@ class JsWebViewContext internal constructor(
     override val NULL: JsNull = JsWebViewNull(this).also { registerWebViewValue(it) }
     override val UNDEFINED: JsUndefined = JsWebViewUndefined(this).also { registerWebViewValue(it) }
 
-    override fun evaluateScript(script: String): JsValue = executeWebViewMessageBlockingAndDecode(JsWebViewMessage.Evaluate(script), "eval")
+    override fun evaluateScript(script: String): JsValue =
+        executeWebViewMessageBlockingAndDecode(JsWebViewMessage.WrapScript(script), "eval")
+
+    /**
+     * Evaluates [expression] and applies [transform] to its completion value in the same native
+     * WebView evaluation, before queued microtasks run. Uses the same block-scoped Script wrapping
+     * as regular WebView evaluation, with a single Acorn parse and no page-side eval or Function.
+     *
+     * The scope and [transform] must belong to this context. The result is owned by the scope.
+     * A script error skips the transform. Promises are not awaited: the transform receives the raw
+     * completion value, and its own return value is returned as-is.
+     */
+    @Throws(JsException::class)
+    context(scope: JsScope)
+    fun eval(
+        expression: String,
+        transform: JsFunction,
+    ): JsValue {
+        require(scope.context === this) { "JsScope belongs to another JsContext" }
+        scope.requireSameContext(transform)
+        return executeWebViewMessageBlockingAndDecode(
+            JsWebViewMessage.WrapScript(expression, (transform as JsWebViewObject).handle),
+            "eval",
+        ).autoClose()
+    }
 
     override fun callFunction(
         f: JsFunction,
@@ -511,7 +565,7 @@ class JsWebViewContext internal constructor(
         withPendingRequests {
             if (!core.isClosed) {
                 id = requestId++
-                it[id] = complete
+                it[id] = JsWebViewPendingRequest(complete)
             }
         }
         if (id < 0) {
@@ -561,7 +615,9 @@ class JsWebViewContext internal constructor(
             initializedWebView.evaluateJavaScript(script) { error ->
                 // A completed reply has already removed its request. A later native completion
                 // must not replace that reply or invalidate its context.
-                if (requestId != 0) completeRequest(requestId, Result.failure(error), nativeFailure = true)
+                if (requestId != 0) {
+                    completeRequest(requestId, Result.failure(error), nativeFailure = true, preparationFailure = true)
+                }
             }
         } catch (e: Throwable) {
             // Decode the saved batch only on submission failure; the normal path reuses the map.
@@ -574,12 +630,15 @@ class JsWebViewContext internal constructor(
         requestId: Int,
         result: Result<JsWebViewProtocolValue>,
         nativeFailure: Boolean = false,
+        preparationFailure: Boolean = false,
     ) {
         val request =
             withPendingRequests {
+                // A prepared script has already advanced to its own native execution callback.
+                if (preparationFailure && it[requestId]?.evaluationStarted == true) return@withPendingRequests null
                 it.remove(requestId)
             }
-        request?.invoke(result, nativeFailure)
+        request?.complete?.invoke(result, nativeFailure)
     }
 
     private fun cancelPendingRequests(requests: List<JsWebViewRequestCompletion>) {
@@ -591,7 +650,7 @@ class JsWebViewContext internal constructor(
     private fun takePendingRequests(): List<JsWebViewRequestCompletion> =
         withPendingRequests { requests ->
             buildList(requests.size) {
-                requests.forEachValue { add(it) }
+                requests.forEachValue { add(it.complete) }
             }.also { requests.clear() }
         }
 

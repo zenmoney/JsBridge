@@ -9,6 +9,12 @@ A Kotlin Multiplatform library that provides JavaScript engine integration for m
 - Kotlin Multiplatform API for JavaScript evaluation and bridging
 - Supports Android, iOS, macOS, and JVM targets
 
+## WebView and Content Security Policy
+
+`JsWebViewContext` executes scripts through the native WebView API, including on pages with `script-src 'none'` or without `unsafe-eval`. It preserves access to the page's globals and DOM, object identity, functions, promises and JavaScript exceptions. The page's CSP still applies to explicit `eval()` calls made by page or plugin code.
+
+The bridge parses scripts with a bundled Acorn parser and captures their completion values before native execution. See [the evaluation implementation notes](docs/webview-evaluation.md) for the protocol and parser update procedure.
+
 ## BigInt values
 
 Primitive JavaScript BigInt values are exposed as `JsNumber` with Double precision and are passed back to JavaScript as `number`. Boxed BigInt values (`Object(1n)`) remain `JsObject` instances and retain their JavaScript object identity.

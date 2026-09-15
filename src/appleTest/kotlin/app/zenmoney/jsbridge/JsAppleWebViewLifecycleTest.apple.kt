@@ -90,7 +90,7 @@ class JsAppleWebViewLifecycleTest {
                     webView.evaluateString(
                         """
                         __oldBridge.dispose();
-                        __oldBridge.dispatch(['e', 'globalThis.__lateOldDispatchRan = true'], 999);
+                        __oldBridge.dispatch(['w', 'globalThis.__lateOldDispatchRan = true'], 999);
                         String($JS_WEB_VIEW_BRIDGE_OBJECT === __replacementBridge);
                         """.trimIndent(),
                     ),

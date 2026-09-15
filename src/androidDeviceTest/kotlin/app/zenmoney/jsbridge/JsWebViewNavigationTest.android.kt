@@ -16,6 +16,25 @@ import kotlin.test.assertTrue
 
 class JsWebViewNavigationTest {
     @Test
+    fun executesOnPageWithStrictCsp() =
+        runBlocking {
+            val webView = createWebView()
+            try {
+                // Android needs the native interface registered before loading the document.
+                JsWebViewContext(webView, disposeWebView = {}).use { first ->
+                    first.evaluateScript("0").close()
+                    loadPage(webView, 0, "<meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'none'\"><body>CSP test</body>")
+                }
+                JsWebViewContext(webView, disposeWebView = {}).use { context ->
+                    assertWebViewWorksWithStrictCsp(context)
+                    assertWebViewAsyncWorksWithStrictCsp(context)
+                }
+            } finally {
+                onMain { webView.destroy() }
+            }
+        }
+
+    @Test
     fun reconnectsRepeatedlyWithoutRebindingOrReloadingTheNativeInterface() =
         runBlocking {
             lateinit var webView: CountingWebView
@@ -121,7 +140,7 @@ class JsWebViewNavigationTest {
                 // Both contexts start at request 1. Deliver the old response before the real one.
                 assertEquals(
                     42,
-                    context.evaluateScript("previousBridge.dispatch(['e', '-1'], 1); 42").use { it.int },
+                    context.evaluateScript("previousBridge.dispatch(['w', '-1'], 1); 42").use { it.int },
                 )
             }
         } finally {
@@ -225,6 +244,7 @@ class JsWebViewNavigationTest {
     private suspend fun loadPage(
         webView: WebView,
         page: Int,
+        html: String = "<html><body>$page</body></html>",
     ) {
         val loaded = CompletableDeferred<Unit>()
         onMain {
@@ -237,7 +257,7 @@ class JsWebViewNavigationTest {
                         loaded.complete(Unit)
                     }
                 }
-            webView.loadDataWithBaseURL("https://jsbridge.test/$page", "<html><body>$page</body></html>", "text/html", "UTF-8", null)
+            webView.loadDataWithBaseURL("https://jsbridge.test/$page", html, "text/html", "UTF-8", null)
         }
         withTimeout(10_000) { loaded.await() }
     }

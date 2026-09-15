@@ -15,7 +15,8 @@ internal enum class JsWebViewProtocolCode(
     COMMAND_CREATE_PROMISE("p"),
     COMMAND_CREATE_UINT8ARRAY("y+"),
 
-    COMMAND_EVALUATE("e"),
+    COMMAND_WRAP_SCRIPT("w"),
+    COMMAND_COMPLETE_EVALUATION("e!"),
     COMMAND_DECODE_EXPRESSION("v"),
 
     COMMAND_READ_UINT8ARRAY("y?"),
@@ -35,6 +36,7 @@ internal enum class JsWebViewProtocolCode(
     CALLBACK_FUNCTION("f"),
     CALLBACK_PROMISE_EXECUTOR("p"),
     CALLBACK_DEALLOCATE("d"),
+    CALLBACK_SCRIPT_WRAPPED("x"),
     ;
 
     private val json: String = "\"$value\""
@@ -107,7 +109,14 @@ internal value class JsWebViewMessage private constructor(
         ): JsWebViewMessage = JsWebViewMessage("""[${code.toJson()}$arguments]""")
 
         @Suppress("FunctionName")
-        fun Evaluate(script: String): JsWebViewMessage = message(JsWebViewProtocolCode.COMMAND_EVALUATE, ",${script.toJson()}")
+        fun WrapScript(
+            script: String,
+            transformHandle: Int? = null,
+        ): JsWebViewMessage =
+            message(
+                JsWebViewProtocolCode.COMMAND_WRAP_SCRIPT,
+                ",${script.toJson()}" + (transformHandle?.let { ",$it" } ?: ""),
+            )
 
         @Suppress("FunctionName")
         fun DecodeExpression(
@@ -405,6 +414,11 @@ internal class JsWebViewMessageHandler(
         )
 
         fun onDeallocate(handle: Int)
+
+        fun onScriptWrapped(
+            requestId: Int,
+            wrappedScript: String,
+        ): Unit = error("Unexpected wrapped script")
     }
 
     fun handle(message: String) {
@@ -416,6 +430,7 @@ internal class JsWebViewMessageHandler(
         when (type) {
             JsWebViewProtocolCode.CALLBACK_RESULT,
             JsWebViewProtocolCode.CALLBACK_ERROR,
+            JsWebViewProtocolCode.CALLBACK_SCRIPT_WRAPPED,
             -> {
                 val request = message.decodePackedProtocolInt(index)
                 val requestId = request.decodedProtocolInt()
@@ -424,7 +439,9 @@ internal class JsWebViewMessageHandler(
                 index = message.decodeProtocolValueEnd(valueStart)
                 val value = JsWebViewProtocolValue.fromEncoded(message.substring(valueStart, index))
                 message.expectProtocolMessageEnd(index)
-                if (type == JsWebViewProtocolCode.CALLBACK_RESULT) {
+                if (type == JsWebViewProtocolCode.CALLBACK_SCRIPT_WRAPPED) {
+                    listener.onScriptWrapped(requestId, value.decodeString())
+                } else if (type == JsWebViewProtocolCode.CALLBACK_RESULT) {
                     listener.onSuccess(requestId, value)
                 } else {
                     listener.onFailure(requestId, value)
@@ -511,6 +528,7 @@ private fun String.decodePackedProtocolCallbackType(startIndex: Int): Long {
             JsWebViewProtocolCode.CALLBACK_FUNCTION.value[0] -> JsWebViewProtocolCode.CALLBACK_FUNCTION
             JsWebViewProtocolCode.CALLBACK_PROMISE_EXECUTOR.value[0] -> JsWebViewProtocolCode.CALLBACK_PROMISE_EXECUTOR
             JsWebViewProtocolCode.CALLBACK_DEALLOCATE.value[0] -> JsWebViewProtocolCode.CALLBACK_DEALLOCATE
+            JsWebViewProtocolCode.CALLBACK_SCRIPT_WRAPPED.value[0] -> JsWebViewProtocolCode.CALLBACK_SCRIPT_WRAPPED
             else -> throw IllegalArgumentException("Unknown JsWebView callback kind at ${index + 1}")
         }
     return ((index + 3).toLong() shl 32) or type.ordinal.toLong()
@@ -601,6 +619,7 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
             enabledTags: [${jsWebViewExpressionValueCodecTags.joinToString(",") { it.toJson() }}],
             maxGraphId: 2147483647,
         });
+        let wrapScript = ($jsWebViewAcornScriptWrapperSource);
         const objectByHandle = new Map();
         const handleByObject = new WeakMap();
         // Native wrappers share one reference; callbacks add temporary references to the same count.
@@ -779,27 +798,12 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
 
         function runCommand (command, handles) {
             switch (command[0]) {
-                case ${JsWebViewProtocolCode.COMMAND_EVALUATE.toJson()}: {
-                    // Keep the eval source stable across requests and restore the outer evaluation's error state.
-                    const errorKey = "__appZenmoneyEvalError";
-                    const hadErrorBox = Object.prototype.hasOwnProperty.call(globalThis, errorKey);
-                    const previousErrorBox = globalThis[errorKey];
-                    globalThis[errorKey] = null;
-                    try {
-                        const value = (0, eval)(
-                            "try {\n" + command[1] +
-                            "\n} catch (__appZenmoneyEvalError) { globalThis.__appZenmoneyEvalError = { error: __appZenmoneyEvalError }; }"
-                        );
-                        const errorBox = globalThis[errorKey];
-                        if (errorBox) throw errorBox.error;
-                        return encode(value, handles);
-                    } finally {
-                        if (hadErrorBox) {
-                            globalThis[errorKey] = previousErrorBox;
-                        } else {
-                            delete globalThis[errorKey];
-                        }
-                    }
+                case ${JsWebViewProtocolCode.COMMAND_COMPLETE_EVALUATION.toJson()}: {
+                    if (command[1]) throw command[2];
+                    if (command[3] === undefined) return encode(command[2], handles);
+                    const transform = objectByHandle.get(command[3]);
+                    if (typeof transform !== "function") throw new Error("Unknown evaluation value transform handle");
+                    return encode(transform(command[2]), handles);
                 }
 
                 case ${JsWebViewProtocolCode.COMMAND_DECODE_EXPRESSION.toJson()}: {
@@ -935,6 +939,7 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
                 objectByHandle.clear();
                 refCountByHandle.clear();
                 unpublishedHandles.clear();
+                wrapScript = null;
                 finalizationRegistry = null;
                 if (window.$JS_WEB_VIEW_BRIDGE_OBJECT === bridge) delete window.$JS_WEB_VIEW_BRIDGE_OBJECT;
             },
@@ -943,6 +948,11 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
                 if (requestId !== undefined) {
                     const handles = [];
                     try {
+                        if (message[0] === ${JsWebViewProtocolCode.COMMAND_WRAP_SCRIPT.toJson()}) {
+                            const script = wrapScript(message[1], requestId, message[2]);
+                            post('[${JsWebViewProtocolCode.CALLBACK_SCRIPT_WRAPPED.toJson()},' + requestId + ',' + coreCodec.stringifyJson(script) + ']');
+                            return;
+                        }
                         post('[${JsWebViewProtocolCode.CALLBACK_RESULT.toJson()},' + requestId + ',' + runCommand(message, handles) + ']');
                         commitHandles(handles);
                     } catch (error) {

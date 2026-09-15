@@ -5,6 +5,9 @@ import android.os.Handler
 import android.os.Looper
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.completeWith
+import kotlinx.coroutines.withTimeoutOrNull
 import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 import java.util.concurrent.CountDownLatch
@@ -65,14 +68,31 @@ private fun createWebView(context: Context): WebView {
 
 internal actual class JsWebViewBlockingRequest<T> {
     private val latch = CountDownLatch(1)
+    private val completion = CompletableDeferred<T>()
     private var result: Result<T>? = null
 
     actual fun complete(result: Result<T>) {
         this.result = result
+        completion.completeWith(result)
         latch.countDown()
     }
 
     actual fun await(debug: String): T {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            // Preparing a script replies on WebView's bridge thread and queues native execution
+            // back to main. Keep processing bridge tasks while this synchronous API waits.
+            return AndroidMainThread.runBlocking {
+                check(
+                    withTimeoutOrNull(10_000) {
+                        completion.await()
+                        true
+                    } == true,
+                ) {
+                    "Timed out executing JsWebViewContext.$debug"
+                }
+                completion.getCompleted()
+            }
+        }
         check(latch.await(10, TimeUnit.SECONDS)) {
             "Timed out executing JsWebViewContext.$debug"
         }

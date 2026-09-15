@@ -158,8 +158,9 @@ internal class AppleJsWebView(
                 return@runOnWebViewThread
             }
             val guardedScript =
-                "(() => { if (!window.$JS_WEB_VIEW_BRIDGE_OBJECT || " +
-                    "$JS_WEB_VIEW_BRIDGE_OBJECT.sessionId !== $contextId) return false; $script; return true; })()"
+                // Keep Script scope: a function wrapper would make plugin var declarations local.
+                "if (window.$JS_WEB_VIEW_BRIDGE_OBJECT && " +
+                    "$JS_WEB_VIEW_BRIDGE_OBJECT.sessionId === $contextId) { $script\n; true; } else { false; }"
             webView.evaluateJavaScript(guardedScript) { result, error ->
                 when {
                     error != null -> {

@@ -9,6 +9,48 @@ import kotlin.test.assertTrue
 
 class JsWebViewRequestFailureTest {
     @Test
+    fun preparedScriptFailureCompletesTheRequestWithoutWaitingForTimeout() {
+        val failure = IllegalStateException("Prepared script failed natively")
+        val webView =
+            FailureReportingWebView { script, onFailure ->
+                if (script == "prepared") {
+                    onFailure(failure)
+                } else {
+                    val requestId = checkNotNull(Regex(""",(\d+)\);$""").find(script)).groupValues[1]
+                    onMessage("""["x",$requestId,"prepared"]""")
+                }
+            }
+        JsWebViewContext(webView).use { context ->
+            assertSame(failure, assertFailsWith<IllegalStateException> { context.evaluateScript("42") })
+            assertTrue(context.isClosed)
+        }
+    }
+
+    @Test
+    fun preparedScriptExecutesOnceAndOwnsItsNativeFailureCallback() {
+        var executions = 0
+        var reply: (() -> Unit)? = null
+        val webView =
+            FailureReportingWebView { script, onFailure ->
+                if (script == "prepared") {
+                    executions++
+                    reply = { onMessage("""["r",1,42]""") }
+                } else {
+                    onMessage("""["x",1,"prepared"]""")
+                    onMessage("""["x",1,"prepared"]""")
+                    onFailure(IllegalStateException("Late preparation failure"))
+                    checkNotNull(reply).invoke()
+                    onMessage("""["x",1,"prepared"]""")
+                }
+            }
+        JsWebViewContext(webView).use { context ->
+            assertEquals(42, context.evaluateScript("42").use { it.int })
+            assertEquals(1, executions)
+            assertFalse(context.isClosed)
+        }
+    }
+
+    @Test
     fun nativeExecutionFailureCompletesItsRequestAndClosesTheContext() {
         val failure = IllegalStateException("Native evaluation failed")
         val webView = FailureReportingWebView { _, onFailure -> onFailure(failure) }

@@ -85,7 +85,7 @@ class JsWebViewContextProtocolTest {
                 val requestId = requestIdRegex.find(script)?.groupValues?.get(1) ?: return@FakeJsWebView
                 val result =
                     when {
-                        script.contains("""dispatch(["e",""") -> """["h",1]"""
+                        script.contains("""dispatch(["w",""") -> """["h",1]"""
                         script.contains("""dispatch(["g",""") -> """["h",8589934594]"""
                         script.contains("""dispatch(["c",""") -> """["h",8589934595]"""
                         script.contains("""dispatch(["v",""") -> """["h",4]"""
@@ -137,7 +137,7 @@ class JsWebViewContextProtocolTest {
 
         assertEquals(7.0, assertIs<JsNumber>(result).toNumber())
         assertEquals(jsWebViewRuntimeScript, webView.scripts[0])
-        assertTrue(webView.scripts[1].contains("""__appZenmoneyJsBridge.dispatch(["e""""))
+        assertTrue(webView.scripts[1].contains("""__appZenmoneyJsBridge.dispatch(["w""""))
         assertEquals(2, webView.scripts.size)
         context.close()
         assertTrue(webView.isClosed)
@@ -150,7 +150,7 @@ class JsWebViewContextProtocolTest {
                 val requestId = requestIdRegex.find(script)?.groupValues?.get(1) ?: return@FakeJsWebView
                 val result =
                     when {
-                        script.contains("""dispatch(["e",""") -> """["i","9007199254740993"]"""
+                        script.contains("""dispatch(["w",""") -> """["i","9007199254740993"]"""
                         script.contains("""dispatch(["a",""") -> """["h",4294967297]"""
                         else -> error("Unexpected script: $script")
                     }
@@ -232,7 +232,7 @@ class JsWebViewContextProtocolTest {
             FakeJsWebView { script ->
                 requestIdRegex.find(script)?.let {
                     val result =
-                        if (script.endsWith(JsWebViewMessage.Evaluate("undefined").toScript(it.groupValues[1].toInt()))) {
+                        if (script.endsWith(JsWebViewMessage.WrapScript("undefined").toScript(it.groupValues[1].toInt()))) {
                             """["u"]"""
                         } else {
                             """["h",7]"""
@@ -285,7 +285,7 @@ class JsWebViewContextProtocolTest {
         assertEquals(scriptCount + 1, webView.scripts.size)
         assertEquals(
             JsWebViewMessage.UpdateRefCounts(intIntMapOf(7, -1, 8, -1, 9, -1)).toScript() +
-                JsWebViewMessage.Evaluate("42").toScript(4),
+                JsWebViewMessage.WrapScript("42").toScript(4),
             webView.scripts.last(),
         )
         context.close()
@@ -308,7 +308,7 @@ class JsWebViewContextProtocolTest {
 
         assertEquals(scriptCount + 1, webView.scripts.size)
         assertEquals(
-            JsWebViewMessage.UpdateRefCounts(intIntMapOf(7, 0)).toScript() + JsWebViewMessage.Evaluate("value").toScript(3),
+            JsWebViewMessage.UpdateRefCounts(intIntMapOf(7, 0)).toScript() + JsWebViewMessage.WrapScript("value").toScript(3),
             webView.scripts.last(),
         )
         context.close()
@@ -333,7 +333,7 @@ class JsWebViewContextProtocolTest {
         context.evaluateScript("42").close()
 
         assertEquals(
-            JsWebViewMessage.UpdateRefCounts(intIntMapOf(7, -1)).toScript() + JsWebViewMessage.Evaluate("42").toScript(3),
+            JsWebViewMessage.UpdateRefCounts(intIntMapOf(7, -1)).toScript() + JsWebViewMessage.WrapScript("42").toScript(3),
             webView.scripts.last(),
         )
         context.close()
@@ -368,7 +368,7 @@ class JsWebViewContextProtocolTest {
         context.evaluateScript("42").close()
 
         assertEquals(
-            JsWebViewMessage.UpdateRefCounts(intIntMapOf(8, -1, 7, -1)).toScript() + JsWebViewMessage.Evaluate("42").toScript(5),
+            JsWebViewMessage.UpdateRefCounts(intIntMapOf(8, -1, 7, -1)).toScript() + JsWebViewMessage.WrapScript("42").toScript(5),
             webView.scripts.last(),
         )
         context.close()

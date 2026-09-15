@@ -2,6 +2,7 @@ package app.zenmoney.jsbridge
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -57,6 +58,8 @@ abstract class JsContextTest {
     }
 
     abstract fun createContext(): JsContext
+
+    protected open fun runAsyncRuntimeTest(block: suspend CoroutineScope.() -> Unit): TestResult = runTest { block() }
 
     @Test
     fun invokesCloseHandlersOnceAndSupportsDisposal() {
@@ -2047,7 +2050,7 @@ abstract class JsContextTest {
 
     @Test
     fun attachesContextWhileEventLoopIsRunning() =
-        runTest {
+        runAsyncRuntimeTest {
             val attachedContext = createContext()
             try {
                 val eventLoop =
