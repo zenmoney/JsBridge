@@ -17,6 +17,54 @@ import kotlin.test.assertTrue
 
 class JsWebViewContextProtocolTest {
     @Test
+    fun evalFailureWhileReadingErrorDataPreservesTheOriginalException() {
+        var requestCount = 0
+        var nextHandle = 1
+        var failEvaluation = true
+        val webView =
+            FakeJsWebView { script ->
+                val requestId = requestIdRegex.find(script)?.groupValues?.get(1) ?: return@FakeJsWebView
+                // Bound the broken implementation too: recursion must fail the test, not overflow its stack.
+                check(++requestCount <= 12) { "Exception inspection recursed" }
+                when {
+                    script.contains("\"message\"") -> onMessage("""["r",$requestId,"CSP blocked eval"]""")
+                    script.contains("\"name\"") -> onMessage("""["r",$requestId,"EvalError"]""")
+                    failEvaluation -> onMessage("""["e",$requestId,["h",${nextHandle++}]]""")
+                    else -> onMessage("""["r",$requestId,42]""")
+                }
+            }
+        JsWebViewContext(webView).use { context ->
+            repeat(2) {
+                val exception = assertFailsWith<JsException> { context.evaluateScript("42") }
+                assertEquals("CSP blocked eval", exception.message)
+                assertEquals("EvalError", exception.name)
+                assertTrue(exception.data.isEmpty())
+                assertFalse(context.isClosed)
+            }
+            failEvaluation = false
+            assertEquals(42, context.evaluateScript("42").use { it.int })
+        }
+    }
+
+    @Test
+    fun throwingErrorPropertiesDoNotRecursivelyInspectTheirErrors() {
+        var requestCount = 0
+        val webView =
+            FakeJsWebView { script ->
+                val requestId = requestIdRegex.find(script)?.groupValues?.get(1) ?: return@FakeJsWebView
+                check(++requestCount <= 8) { "Exception inspection recursed" }
+                onMessage("""["e",$requestId,["h",$requestCount]]""")
+            }
+        JsWebViewContext(webView).use { context ->
+            val exception = assertFailsWith<JsException> { context.evaluateScript("throw hostileError") }
+            assertEquals("JavaScript exception", exception.message)
+            assertEquals("", exception.name)
+            assertTrue(exception.data.isEmpty())
+            assertFalse(context.isClosed)
+        }
+    }
+
+    @Test
     fun expressionDecoderUsesRawWebViewCommandAndExpressionEncodedReferences() {
         val webView =
             FakeJsWebView { script ->

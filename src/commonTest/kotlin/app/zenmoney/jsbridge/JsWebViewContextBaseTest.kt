@@ -22,6 +22,26 @@ abstract class JsWebViewContextBaseTest : JsContextTest() {
     protected open fun runBrowserTimerTest(block: suspend TestScope.() -> Unit) = runTest { block() }
 
     @Test
+    fun reportsOriginalErrorWhenItsPropertiesThrow() {
+        val exception =
+            assertFailsWith<JsException> {
+                context.evaluateScript(
+                    """
+                    throw Object.defineProperties(new Error('original failure'), {
+                        name: { get() { throw new Error('name getter failed'); } },
+                        detail: { enumerable: true, get() { throw new Error('detail getter failed'); } }
+                    });
+                    """.trimIndent(),
+                )
+            }
+
+        assertEquals("original failure", exception.message)
+        assertEquals("", exception.name)
+        assertTrue(exception.data.isEmpty())
+        assertEquals(42, context.evaluateScript("42").use { it.int })
+    }
+
+    @Test
     fun rejectsDetachedUint8ArrayDuringByteCopy() {
         val value =
             assertIs<JsUint8Array>(

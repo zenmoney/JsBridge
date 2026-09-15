@@ -164,29 +164,43 @@ class JsWebViewContext internal constructor(
             it.setTag(NATIVE_EXCEPTION_TAG, exception)
         }
 
-    override fun createException(error: JsValue): JsException =
-        JsException(
-            message =
-                runCatching {
-                    if (error is JsString) {
-                        error.toString()
-                    } else {
+    private var creatingException = false
+
+    override fun createException(error: JsValue): JsException {
+        // Reading an error can execute getters, coercions and Object.keys in the page. If that
+        // throws too, never recursively inspect its error.
+        val fallbackMessage = if (error is JsObject) "JavaScript exception" else error.toString()
+        val fallbackName = if (error is JsString) "Error" else ""
+        val cause = (error as? JsObject)?.let { getTag(it, NATIVE_EXCEPTION_TAG) as? Throwable }
+        if (creatingException) return JsException(fallbackMessage, cause, name = fallbackName)
+        creatingException = true
+        try {
+            return JsException(
+                message =
+                    runCatching {
+                        if (error is JsString) {
+                            error.toString()
+                        } else {
+                            (error as? JsObject)
+                                ?.getValue("message")
+                                ?.use { it.takeIf { it !is JsUndefined }?.toString() }
+                                ?: fallbackMessage
+                        }
+                    }.getOrDefault(fallbackMessage),
+                cause = cause,
+                data = runCatching { (error as? JsObject)?.toPlainMap() ?: emptyMap() }.getOrDefault(emptyMap()),
+                name =
+                    runCatching {
                         (error as? JsObject)
-                            ?.getValue("message")
-                            ?.use { it.takeIf { it !is JsUndefined }?.toString() }
-                            ?: error.toString()
-                    }
-                }.getOrElse { error.toString() },
-            cause = (error as? JsObject)?.getTag(NATIVE_EXCEPTION_TAG),
-            data = (error as? JsObject)?.toPlainMap() ?: emptyMap(),
-            name =
-                runCatching {
-                    (error as? JsObject)
-                        ?.getValue("name")
-                        ?.use { (it as? JsString)?.toString() }
-                        ?: if (error is JsString) "Error" else ""
-                }.getOrDefault(if (error is JsString) "Error" else ""),
-        )
+                            ?.getValue("name")
+                            ?.use { (it as? JsString)?.toString() }
+                            ?: fallbackName
+                    }.getOrDefault(fallbackName),
+            )
+        } finally {
+            creatingException = false
+        }
+    }
 
     override fun createFunction(value: JsFunctionScope.(args: List<JsValue>) -> JsValue): JsFunction {
         val callbackId = registerFunctionCallback(value)
