@@ -346,6 +346,38 @@ class JsWebViewTimerObservationProtocolTest {
         }
 
     @Test
+    fun nativeCallbackRepliesDoNotRequestRendererAcknowledgements() =
+        runTest {
+            withTimerWebView(attachOnEntry = false) { context, eventLoop, webView ->
+                eventLoop.attachTo(context)
+                context.globalThis["nativeCall"] =
+                    JsFunction(context) { args ->
+                        if (args[0].boolean) error("native failure")
+                        JsNumber(42)
+                    }
+                webView.resetTraffic()
+                context
+                    .evaluateScript(
+                        """
+                        nativeCall(false).then(value => { globalThis.nativeResult = value; });
+                        nativeCall(true).catch(error => { globalThis.nativeError = error.message; });
+                        """.trimIndent(),
+                    ).close()
+
+                withTimeout(1_000) { eventLoop.run() }
+
+                assertEquals(42, context.evaluateScript("nativeResult").use { it.int })
+                assertEquals("native failure", context.evaluateScript("nativeError").use { it.string })
+                assertTrue(webView.callbackReplies >= 2, "Both success and failure must reach JavaScript")
+                assertEquals(
+                    0,
+                    webView.callbackReplyAcknowledgements,
+                    "Native callback replies have no request awaiting an acknowledgement",
+                )
+            }
+        }
+
+    @Test
     fun nativeTimerIdsAndCancellationDoNotDependOnAcknowledgements() =
         runTest {
             withTimerWebView(attachOnEntry = false) { context, eventLoop, webView ->
@@ -587,6 +619,10 @@ private class TimerProtocolWebView(
     val propertyReads = mutableListOf<String>()
     var functionCalls = 0
         private set
+    var callbackReplies = 0
+        private set
+    var callbackReplyAcknowledgements = 0
+        private set
     private val callRequests = mutableSetOf<String>()
 
     fun resetTraffic() {
@@ -594,6 +630,8 @@ private class TimerProtocolWebView(
         functionResults.clear()
         propertyReads.clear()
         functionCalls = 0
+        callbackReplies = 0
+        callbackReplyAcknowledgements = 0
     }
 
     fun rejectNotification(message: String) {
@@ -645,6 +683,7 @@ private class TimerProtocolWebView(
             ?.groupValues
             ?.get(1)
             ?.let { propertyReads += it }
+        if (CALLBACK_REPLY.containsMatchIn(script)) callbackReplies++
         CALL.find(script)?.let {
             functionCalls++
             callRequests += it.groupValues[1]
@@ -672,6 +711,7 @@ private class TimerProtocolWebView(
         script: String,
         onFailure: (Throwable) -> Unit,
     ) {
+        if (CALLBACK_REPLY.containsMatchIn(script)) callbackReplyAcknowledgements++
         if (failNextRequestAsDetached) {
             failNextRequestAsDetached = false
             onFailure(JsWebViewContextDetachedException())
@@ -683,6 +723,7 @@ private class TimerProtocolWebView(
     override fun close() {}
 
     private companion object {
+        val CALLBACK_REPLY = Regex("""\.dispatch\(\["[+-]",""")
         val CALL = Regex("""\.dispatch\(\["c",\d+,.*],(\d+)\);$""")
         val RESULT = Regex("""^\["r",(\d+),(.+)]$""")
         val EVENT = Regex(""",\["(schedule|cancel|queued|observe)"(?:,|\])""")

@@ -614,10 +614,14 @@ class JsWebViewContext internal constructor(
             }
         try {
             val script = if (requestId == 0) message.toScript(changes) else message.toScript(requestId, changes)
-            initializedWebView.evaluateJavaScript(script) { error ->
-                // A completed reply has already removed its request. A later native completion
-                // must not replace that reply or invalidate its context.
-                if (requestId != 0) {
+            if (requestId == 0) {
+                // Commands have no waiting request. Avoid a renderer acknowledgement for
+                // each native callback reply whose result and execution failure are unused.
+                initializedWebView.evaluateJavaScript(script)
+            } else {
+                initializedWebView.evaluateJavaScript(script) { error ->
+                    // A completed reply has already removed its request. A later native completion
+                    // must not replace that reply or invalidate its context.
                     completeRequest(requestId, Result.failure(error), nativeFailure = true, preparationFailure = true)
                 }
             }
