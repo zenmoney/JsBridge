@@ -1250,6 +1250,62 @@ abstract class JsContextTest {
         }
 
     @Test
+    fun drainsImmediateCallbacksWhileNativePromiseIsPending() = assertQueuedCallbacksWhilePromiseIsPending("setImmediate")
+
+    @Test
+    fun drainsNextTickCallbacksWhileNativePromiseIsPending() = assertQueuedCallbacksWhilePromiseIsPending("process.nextTick")
+
+    private fun assertQueuedCallbacksWhilePromiseIsPending(scheduler: String) =
+        runAsyncRuntimeTest {
+            val eventLoop = JsEventLoop(coroutineContext).apply { attachTo(context) }
+            try {
+                repeat(2) {
+                    jsScoped(context) {
+                        val start = CompletableDeferred<Unit>()
+                        val result =
+                            JsPromise {
+                                start.await()
+                                eval(
+                                    """
+                                    globalThis.queuedCallbackOrder = [];
+                                    new Promise(resolve => {
+                                        let scheduling = true;
+                                        clearImmediate(setImmediate(() => queuedCallbackOrder.push('cancelled')));
+                                        $scheduler(() => {
+                                            if (scheduling) throw new Error('queue drained inside registration');
+                                            queuedCallbackOrder.push('first');
+                                            Promise.resolve().then(() => {
+                                                queuedCallbackOrder.push('microtask');
+                                                $scheduler(() => {
+                                                    queuedCallbackOrder.push('second');
+                                                    resolve(42);
+                                                });
+                                            });
+                                        });
+                                        scheduling = false;
+                                    });
+                                    """.trimIndent(),
+                                ).await()
+                            }
+                        val running = async(start = CoroutineStart.UNDISPATCHED) { eventLoop.run() }
+                        try {
+                            // The loop is already waiting for the native Promise producer.
+                            start.complete(Unit)
+                            withTimeout(5_000) { running.await() }
+                            assertEquals(42, withTimeout(5_000) { result.await().int })
+                            assertEquals("first,microtask,second", eval("queuedCallbackOrder.join(',')").string)
+                        } finally {
+                            running.cancelAndJoin()
+                        }
+                    }
+                }
+            } finally {
+                eventLoop.cancel()
+                withTimeout(5_000) { eventLoop.run() }
+            }
+        }
+
+    @Test
     fun runsNextTickCallbacksBeforeImmediateCallbacks() =
         runTestWithEventLoop { eventLoop ->
             context.evaluateScript(

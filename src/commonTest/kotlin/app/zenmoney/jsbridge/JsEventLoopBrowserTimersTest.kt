@@ -1,16 +1,18 @@
 package app.zenmoney.jsbridge
 
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.KEEP
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.OBSERVE
+import app.zenmoney.jsbridge.JsEventLoopPolicy.MissingApiAction.SKIP
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFails
 import kotlin.test.assertTrue
 
 class JsEventLoopBrowserTimersTest {
     @Test
     fun lockedPageShimsDoNotPreventBrowserTimerAttachment() =
         runTest {
-            for (mode in listOf(JsTimerMode.OBSERVE, JsTimerMode.PRESERVE)) {
+            for (policy in listOf(JsEventLoopPolicy(OBSERVE, SKIP), JsEventLoopPolicy(KEEP, SKIP))) {
                 for (process in listOf("undefined", "42", "Object.freeze({ nextTick: 43 })")) {
                     JsContext().use { context ->
                         val eventLoop = JsEventLoop(coroutineContext)
@@ -24,7 +26,15 @@ class JsEventLoopBrowserTimersTest {
                                     globalThis.pageProcess = globalThis.process;
                                     """.trimIndent(),
                                 ).close()
-                            eventLoop.attachTo(context, timerMode = mode)
+                            eventLoop.attachTo(
+                                context,
+                                policies =
+                                    JsEventLoopPolicies(
+                                        timers = policy,
+                                        immediate = JsEventLoopPolicy(KEEP, SKIP),
+                                        nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                                    ),
+                            )
                             assertEquals(44, context.evaluateScript("setImmediate").use { it.int })
                             assertTrue(context.evaluateScript("process === pageProcess").use { it.boolean })
                             kotlinx.coroutines.withTimeout(1_000) { eventLoop.run() }
@@ -46,14 +56,15 @@ class JsEventLoopBrowserTimersTest {
                         context
                             .evaluateScript(
                                 """
-                                for (const name of ['process', 'setImmediate', 'clearImmediate']) {
+                                for (const name of ['process', 'setImmediate', 'clearImmediate',
+                                    'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval']) {
                                     Object.defineProperty(globalThis, name, $accessor
                                         ? { configurable: true, get() { return undefined; } }
                                         : { configurable: true, writable: false, value: undefined });
                                 }
                                 """.trimIndent(),
                             ).close()
-                        eventLoop.attachTo(context, timerMode = JsTimerMode.PRESERVE)
+                        eventLoop.attachTo(context)
                         context
                             .evaluateScript(
                                 """
@@ -61,10 +72,13 @@ class JsEventLoopBrowserTimersTest {
                                 clearImmediate(setImmediate(() => calls.push('cancelled')));
                                 setImmediate(() => calls.push('immediate'));
                                 process.nextTick(() => calls.push('nextTick'));
+                                clearInterval(setTimeout(() => calls.push('cancelled'), 1));
+                                clearTimeout(setInterval(() => calls.push('cancelled'), 1));
+                                setTimeout(() => calls.push('timeout'), 1);
                                 """.trimIndent(),
                             ).close()
                         kotlinx.coroutines.withTimeout(1_000) { eventLoop.run() }
-                        assertEquals("nextTick,immediate", context.evaluateScript("calls.join(',')").use { it.string })
+                        assertEquals("nextTick,immediate,timeout", context.evaluateScript("calls.join(',')").use { it.string })
                     } finally {
                         eventLoop.cancel()
                     }
@@ -73,69 +87,63 @@ class JsEventLoopBrowserTimersTest {
         }
 
     @Test
-    fun timerCreatedDuringAttachmentCanBeCancelledAfterAttachment() =
+    fun browserModesDoNotCreateOrAccessNodeGlobals() =
         runTest {
-            val context = JsContext()
-            val eventLoop = JsEventLoop(coroutineContext)
-            try {
-                jsScoped(context) { eval(TIMER_TEST_SCRIPT) }
-                eventLoop.attachTo(context, timerMode = JsTimerMode.PRESERVE)
-                jsScoped(context) {
-                    assertEquals("true", eval("timersStayedNative").toString())
-                    eval("clearTimeout(timerCreatedDuringAttachment)")
-                    assertEquals("true", eval("cancelledNativeTimer").toString())
-                    assertEquals("true", eval("descriptorsWerePreserved()").toString())
+            for (policy in listOf(JsEventLoopPolicy(OBSERVE, SKIP), JsEventLoopPolicy(KEEP, SKIP))) {
+                for (setup in listOf("", "installPageGlobals()")) {
+                    JsContext().use { context ->
+                        val eventLoop = JsEventLoop(coroutineContext)
+                        try {
+                            context.evaluateScript(TIMER_TEST_SCRIPT).close()
+                            context.evaluateScript(setup).close()
+                            eventLoop.attachTo(
+                                context,
+                                policies =
+                                    JsEventLoopPolicies(
+                                        timers = policy,
+                                        immediate = JsEventLoopPolicy(KEEP, SKIP),
+                                        nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                                    ),
+                            )
+                            assertTrue(context.evaluateScript("nodeGlobalsWerePreserved()").use { it.boolean })
+                            kotlinx.coroutines.withTimeout(1_000) { eventLoop.run() }
+                        } finally {
+                            eventLoop.cancel()
+                        }
+                    }
                 }
-            } finally {
-                eventLoop.cancel()
-                context.close()
             }
         }
 
     @Test
-    fun nonConfigurableWritableTimersStayNativeThroughoutAttachment() =
+    fun preserveModeKeepsBrowserTimerFunctionsAndDescriptors() =
         runTest {
-            val context = JsContext()
-            val eventLoop = JsEventLoop(coroutineContext)
-            try {
-                jsScoped(context) {
-                    eval("globalThis.lockTimerGlobals = true")
-                    eval(TIMER_TEST_SCRIPT)
+            for (locked in listOf(false, true)) {
+                JsContext().use { context ->
+                    val eventLoop = JsEventLoop(coroutineContext)
+                    try {
+                        context.evaluateScript("globalThis.lockTimerGlobals = $locked").close()
+                        context.evaluateScript(TIMER_TEST_SCRIPT).close()
+                        eventLoop.attachTo(
+                            context,
+                            policies =
+                                JsEventLoopPolicies(
+                                    timers = JsEventLoopPolicy(KEEP, SKIP),
+                                    immediate = JsEventLoopPolicy(KEEP, SKIP),
+                                    nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                                ),
+                        )
+                        assertTrue(context.evaluateScript("descriptorsWerePreserved()").use { it.boolean })
+                        context.evaluateScript("clearTimeout(setTimeout(() => {}, 1000))").close()
+                        assertTrue(context.evaluateScript("cancelledNativeTimer").use { it.boolean })
+                    } finally {
+                        eventLoop.cancel()
+                    }
                 }
-                eventLoop.attachTo(context, timerMode = JsTimerMode.PRESERVE)
-                jsScoped(context) {
-                    assertEquals("true", eval("timersStayedNative").toString())
-                    eval("clearTimeout(timerCreatedDuringAttachment)")
-                    assertEquals("true", eval("cancelledNativeTimer").toString())
-                    assertEquals("true", eval("descriptorsWerePreserved()").toString())
-                }
-            } finally {
-                eventLoop.cancel()
-                context.close()
-            }
-        }
-
-    @Test
-    fun failedAttachmentPreservesTimerDescriptors() =
-        runTest {
-            val context = JsContext()
-            val eventLoop = JsEventLoop(coroutineContext)
-            try {
-                jsScoped(context) {
-                    eval(TIMER_TEST_SCRIPT)
-                    eval("Object.defineProperty(globalThis, 'process', { get() { throw new Error('attachment interrupted'); } })")
-                }
-                assertFails { eventLoop.attachTo(context, timerMode = JsTimerMode.PRESERVE) }
-                jsScoped(context) { assertEquals("true", eval("descriptorsWerePreserved()").toString()) }
-            } finally {
-                eventLoop.cancel()
-                context.close()
             }
         }
 }
 
-// A page accessor runs synchronously during attachment, deterministically exercising the interval
-// in which other renderer tasks can run between the native bridge's individual RPCs.
 private val TIMER_TEST_SCRIPT =
     """
     (() => {
@@ -154,15 +162,22 @@ private val TIMER_TEST_SCRIPT =
             return descriptor.value === timers[index] && descriptor.writable &&
                 descriptor.configurable === configurable && !descriptor.enumerable && !descriptor.get;
         });
-        const process = {};
-        Object.defineProperty(globalThis, 'process', {
-            configurable: true,
-            get() {
-                globalThis.timersStayedNative = names.every((name, index) => globalThis[name] === timers[index]);
-                globalThis.timerCreatedDuringAttachment = setTimeout(() => {}, 1000);
-                return process;
-            },
-            set() {}
+        const nodeNames = ['process', 'setImmediate', 'clearImmediate'];
+        nodeNames.forEach(name => delete globalThis[name]);
+        let descriptors = nodeNames.map(() => undefined);
+        globalThis.installPageGlobals = () => {
+            nodeNames.forEach(name => Object.defineProperty(globalThis, name, {
+                configurable: true,
+                get() { throw new Error('Must not read page global ' + name); },
+                set() { throw new Error('Must not write page global ' + name); },
+            }));
+            descriptors = nodeNames.map(name => Object.getOwnPropertyDescriptor(globalThis, name));
+        };
+        globalThis.nodeGlobalsWerePreserved = () => nodeNames.every((name, index) => {
+            const current = Object.getOwnPropertyDescriptor(globalThis, name);
+            const original = descriptors[index];
+            return original ? current && current.get === original.get && current.set === original.set &&
+                current.configurable === original.configurable && current.enumerable === original.enumerable : !current;
         });
     })()
     """.trimIndent()

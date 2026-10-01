@@ -1,5 +1,8 @@
 package app.zenmoney.jsbridge
 
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.KEEP
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.OBSERVE
+import app.zenmoney.jsbridge.JsEventLoopPolicy.MissingApiAction.SKIP
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -181,7 +184,15 @@ abstract class JsWebViewContextBaseTest : JsContextTest() {
                 ).close()
             val eventLoop = JsEventLoop(coroutineContext)
             try {
-                eventLoop.attachTo(context, timerMode = JsTimerMode.OBSERVE)
+                eventLoop.attachTo(
+                    context,
+                    policies =
+                        JsEventLoopPolicies(
+                            timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                            immediate = JsEventLoopPolicy(KEEP, SKIP),
+                            nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                        ),
+                )
                 context
                     .evaluateScript(
                         """
@@ -213,7 +224,15 @@ abstract class JsWebViewContextBaseTest : JsContextTest() {
         runBrowserTimerTest {
             val eventLoop = JsEventLoop(coroutineContext)
             try {
-                eventLoop.attachTo(context, timerMode = JsTimerMode.OBSERVE)
+                eventLoop.attachTo(
+                    context,
+                    policies =
+                        JsEventLoopPolicies(
+                            timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                            immediate = JsEventLoopPolicy(KEEP, SKIP),
+                            nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                        ),
+                )
                 context
                     .evaluateScript(
                         """
@@ -238,7 +257,15 @@ abstract class JsWebViewContextBaseTest : JsContextTest() {
         runBrowserTimerTest {
             val eventLoop = JsEventLoop(coroutineContext)
             try {
-                eventLoop.attachTo(context, timerMode = JsTimerMode.OBSERVE)
+                eventLoop.attachTo(
+                    context,
+                    policies =
+                        JsEventLoopPolicies(
+                            timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                            immediate = JsEventLoopPolicy(KEEP, SKIP),
+                            nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                        ),
+                )
                 context
                     .evaluateScript(
                         """
@@ -263,7 +290,15 @@ abstract class JsWebViewContextBaseTest : JsContextTest() {
         runBrowserTimerTest {
             val eventLoop = JsEventLoop(coroutineContext)
             try {
-                eventLoop.attachTo(context, timerMode = JsTimerMode.OBSERVE)
+                eventLoop.attachTo(
+                    context,
+                    policies =
+                        JsEventLoopPolicies(
+                            timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                            immediate = JsEventLoopPolicy(KEEP, SKIP),
+                            nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                        ),
+                )
                 context
                     .evaluateScript(
                         """
@@ -294,7 +329,15 @@ abstract class JsWebViewContextBaseTest : JsContextTest() {
                 ).close()
             val eventLoop = JsEventLoop(coroutineContext)
             try {
-                eventLoop.attachTo(context, timerMode = JsTimerMode.OBSERVE)
+                eventLoop.attachTo(
+                    context,
+                    policies =
+                        JsEventLoopPolicies(
+                            timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                            immediate = JsEventLoopPolicy(KEEP, SKIP),
+                            nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                        ),
+                )
                 context
                     .evaluateScript(
                         """

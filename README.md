@@ -21,8 +21,77 @@ The WebView runtime uses a non-enumerable symbol property instead of a string-na
 `window` property. Copying or deleting string properties such as `__appZenmoneyJsBridge`
 does not affect its session. The runtime captures the native message channel during
 initialization, so hiding its global or replacing `postMessage` afterwards does not
-interrupt existing callbacks. Configurable read-only `process`, `setImmediate` and
-`clearImmediate` placeholders are replaced when attaching the event loop.
+interrupt existing callbacks.
+
+`JsEventLoop.attachTo` accepts a `JsEventLoopPolicies` object with three fields:
+`timers` (`setTimeout`, `setInterval` and their clear functions), `immediate`
+(`setImmediate` and `clearImmediate`), and `nextTick` (`process.nextTick`).
+Each field is a `JsEventLoopPolicy` with two required fields:
+
+| Field | Action | Behavior |
+| --- | --- | --- |
+| `ifPresent` | `KEEP` | Leave the existing functions unchanged, without awaiting their work. |
+| `ifPresent` | `OBSERVE` | Wrap existing functions and await callbacks through their original scheduler. |
+| `ifPresent` | `REPLACE` | Replace the group with functions scheduled by this event loop. |
+| `ifMissing` | `SKIP` | Leave the entire group untouched. |
+| `ifMissing` | `INSTALL` | Install the entire group with functions scheduled by this event loop. |
+| `ifMissing` | `FAIL` | Fail attachment with a `JsException` identifying the missing group and function. |
+
+The action enums are nested in `JsEventLoopPolicy`: `ExistingApiAction` and
+`MissingApiAction`. A group is present only when all its members are functions.
+Missing or non-function members select `ifMissing` for the whole group;
+`INSTALL` also replaces any remaining members to keep scheduling and cancellation
+consistent. Installing `nextTick` creates `process` when it is null or absent;
+an existing object retains its other properties.
+
+`KEEP + SKIP` leaves properties untouched without reading getters.
+`REPLACE + INSTALL` installs functions without reading the originals. Other
+combinations check availability and may invoke getters. Getter errors and failures
+to observe or install functions fail attachment and roll back its changes; they
+are not treated as missing APIs. Both replacement and installation support
+configurable read-only placeholders.
+
+Each field defaults to `REPLACE + INSTALL`, so `attachTo(context)` installs all
+three groups. For a page context that should only observe browser timers:
+
+```kotlin
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.KEEP
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.OBSERVE
+import app.zenmoney.jsbridge.JsEventLoopPolicy.MissingApiAction.SKIP
+
+val untouched = JsEventLoopPolicy(ifPresent = KEEP, ifMissing = SKIP)
+
+eventLoop.attachTo(
+    context,
+    policies = JsEventLoopPolicies(
+        timers = JsEventLoopPolicy(
+            ifPresent = OBSERVE,
+            ifMissing = SKIP,
+        ),
+        immediate = untouched,
+        nextTick = untouched,
+    ),
+)
+```
+
+This leaves `process`, `setImmediate` and `clearImmediate` untouched, including when
+absent. Omitted fields keep their own `REPLACE + INSTALL` defaults. To observe all
+available groups, pass an `OBSERVE + SKIP` policy to all three fields. Use
+`OBSERVE + INSTALL` to also provide missing APIs, or `OBSERVE + FAIL` to require
+existing implementations. `KEEP + INSTALL` provides only missing groups; work
+through existing groups is not awaited. A `JsEventLoopPolicies` object can be reused
+across contexts or adjusted with `copy(timers = ...)`, `copy(immediate = ...)`, or
+`copy(nextTick = ...)`.
+
+Observation retains the original scheduler's timing, handles, execution and error
+handling. Cancellation restores the original descriptors where the page has not
+replaced or locked the wrappers; scheduled work continues.
+Reattaching the same context keeps its original configuration. Observation covers
+only calls through the installed wrappers: earlier registrations, saved original
+functions and string timer handlers are excluded, and returned callback promises
+are not awaited. Observed intervals keep `run()` pending until cleared through a
+wrapped clear function. Queued event-loop callbacks continue to run while the loop
+awaits native Promises.
 
 This is resilience within the page's JavaScript realm, not isolation from arbitrary
 page changes. Removing the bridge's symbol property, modifying JavaScript built-ins,

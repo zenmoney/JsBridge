@@ -1,5 +1,8 @@
 package app.zenmoney.jsbridge
 
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.KEEP
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.OBSERVE
+import app.zenmoney.jsbridge.JsEventLoopPolicy.MissingApiAction.SKIP
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -40,7 +43,15 @@ class JsWebViewObservedTimerLifecycleTest {
                         globalThis.originalBrowserTimers = [setTimeout, clearTimeout, setInterval, clearInterval];
                         """.trimIndent(),
                     ).close()
-                eventLoop.attachTo(context, timerMode = JsTimerMode.OBSERVE)
+                eventLoop.attachTo(
+                    context,
+                    policies =
+                        JsEventLoopPolicies(
+                            timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                            immediate = JsEventLoopPolicy(KEEP, SKIP),
+                            nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                        ),
+                )
                 context
                     .evaluateScript(
                         """
@@ -72,7 +83,15 @@ class JsWebViewObservedTimerLifecycleTest {
                 running.awaitBrowserResult()
 
                 JsWebViewContext(webView, disposeWebView = {}).use { replacement ->
-                    eventLoop.attachTo(replacement, timerMode = JsTimerMode.OBSERVE)
+                    eventLoop.attachTo(
+                        replacement,
+                        policies =
+                            JsEventLoopPolicies(
+                                timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                                immediate = JsEventLoopPolicy(KEEP, SKIP),
+                                nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                            ),
+                    )
                     replacement
                         .evaluateScript(
                             """

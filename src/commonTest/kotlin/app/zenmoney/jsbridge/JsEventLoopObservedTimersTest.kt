@@ -1,5 +1,8 @@
 package app.zenmoney.jsbridge
 
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.KEEP
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.OBSERVE
+import app.zenmoney.jsbridge.JsEventLoopPolicy.MissingApiAction.SKIP
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -20,18 +23,27 @@ class JsEventLoopObservedTimersTest {
                 context.evalBrowser(
                     """
                     globalThis.calls = 0;
-                    Object.defineProperty(globalThis, 'process', {
-                        configurable: true,
-                        get() {
+                    globalThis[Symbol.for('app.zenmoney.jsbridge')] = {
+                        addDisposeCallback() {
                             globalThis.duringAttachment = setTimeout(() => calls++, 10);
                             throw new Error('attachment failed');
                         }
-                    });
+                    };
                     """.trimIndent(),
                 )
                 val eventLoop = JsEventLoop(coroutineContext)
                 try {
-                    assertFailsWith<JsException> { eventLoop.attachTo(context, timerMode = JsTimerMode.OBSERVE) }
+                    assertFailsWith<JsException> {
+                        eventLoop.attachTo(
+                            context,
+                            policies =
+                                JsEventLoopPolicies(
+                                    timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                                    immediate = JsEventLoopPolicy(KEEP, SKIP),
+                                    nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                                ),
+                        )
+                    }
                     assertNull(context.core.eventLoop)
                     assertTrue(context.browserBoolean("__browser.originalsWereRestored()"))
                     context.evalBrowser("__browser.fire(duringAttachment)")
@@ -393,7 +405,15 @@ class JsEventLoopObservedTimersTest {
             if (beforeAttachment.isNotEmpty()) context.evalBrowser(beforeAttachment)
             val eventLoop = JsEventLoop(coroutineContext)
             try {
-                eventLoop.attachTo(context, timerMode = JsTimerMode.OBSERVE)
+                eventLoop.attachTo(
+                    context,
+                    policies =
+                        JsEventLoopPolicies(
+                            timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                            immediate = JsEventLoopPolicy(KEEP, SKIP),
+                            nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                        ),
+                )
                 block(context, eventLoop)
             } finally {
                 eventLoop.cancel()

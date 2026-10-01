@@ -6,6 +6,7 @@ import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
@@ -14,6 +15,12 @@ import kotlin.test.assertEquals
 
 class JsWebViewContextTest : JsWebViewContextBaseTest() {
     override fun createContext(): JsContext = JsWebViewContext(ApplicationProvider.getApplicationContext<Context>())
+
+    override fun runAsyncRuntimeTest(block: suspend CoroutineScope.() -> Unit) =
+        super.runAsyncRuntimeTest {
+            // Renderer callbacks run in real time, outside runTest's virtual scheduler.
+            withContext(Dispatchers.Default.limitedParallelism(1), block)
+        }
 
     private val mainThreadDispatcher =
         object : CoroutineDispatcher() {

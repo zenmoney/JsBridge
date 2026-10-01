@@ -1,5 +1,10 @@
 package app.zenmoney.jsbridge
 
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.KEEP
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.OBSERVE
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction.REPLACE
+import app.zenmoney.jsbridge.JsEventLoopPolicy.MissingApiAction.INSTALL
+import app.zenmoney.jsbridge.JsEventLoopPolicy.MissingApiAction.SKIP
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
@@ -39,12 +44,28 @@ class JsWebViewTimerObservationProtocolTest {
                 webView.failTickExtraction = true
                 val error =
                     assertFailsWith<IllegalStateException> {
-                        eventLoop.attachTo(context, timerMode = JsTimerMode.OBSERVE)
+                        eventLoop.attachTo(
+                            context,
+                            policies =
+                                JsEventLoopPolicies(
+                                    timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                                    immediate = JsEventLoopPolicy(KEEP, SKIP),
+                                    nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                                ),
+                        )
                     }
                 assertEquals("Attachment tick extraction failed", error.message)
                 assertEquals(1, webView.delayedNotifications.size)
 
-                eventLoop.attachTo(context, timerMode = JsTimerMode.OBSERVE)
+                eventLoop.attachTo(
+                    context,
+                    policies =
+                        JsEventLoopPolicies(
+                            timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                            immediate = JsEventLoopPolicy(KEEP, SKIP),
+                            nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                        ),
+                )
                 webView.onMessage(webView.delayedNotifications.removeLast())
                 testScheduler.runCurrent()
 
@@ -161,6 +182,358 @@ class JsWebViewTimerObservationProtocolTest {
             }
         }
 
+    @Test
+    fun unobservedAttachmentsNeedOnlyTwoTicksAndOneCheckpointWithoutExportedPromises() =
+        runTest {
+            for (policy in listOf(JsEventLoopPolicy(KEEP, SKIP), JsEventLoopPolicy(REPLACE, INSTALL))) {
+                withTimerWebView(attachOnEntry = false) { context, eventLoop, webView ->
+                    eventLoop.attachTo(context, policies = JsEventLoopPolicies(timers = policy, immediate = policy, nextTick = policy))
+                    webView.resetTraffic()
+
+                    withTimeout(1_000) { eventLoop.runAndComplete() }
+
+                    assertEquals(3, webView.functionCalls, "Idle run needs two ticks and a checkpoint, with no disposal RPC: $policy")
+                    assertEquals(
+                        0,
+                        webView.functionResults.count { it.startsWith("[\"h\",") },
+                        "Checkpoints must not export a Promise handle",
+                    )
+                    assertEquals(emptyList(), webView.nativeEvents)
+                }
+            }
+        }
+
+    @Test
+    fun unavailableObserversDoNotAddDisposalRpc() =
+        runTest {
+            for (removeTimers in listOf(false, true)) {
+                for (ifMissing in listOf(SKIP, INSTALL)) {
+                    withTimerWebView(attachOnEntry = false) { context, eventLoop, webView ->
+                        context
+                            .evaluateScript(
+                                """
+                                delete globalThis.setImmediate;
+                                delete globalThis.clearImmediate;
+                                delete globalThis.process;
+                                if ($removeTimers) {
+                                    for (const name of ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval']) {
+                                        delete globalThis[name];
+                                    }
+                                }
+                                """.trimIndent(),
+                            ).close()
+                        val policy = JsEventLoopPolicy(OBSERVE, ifMissing)
+                        webView.resetTraffic()
+                        eventLoop.attachTo(
+                            context,
+                            policies =
+                                JsEventLoopPolicies(
+                                    timers = if (removeTimers) policy else JsEventLoopPolicy(KEEP, SKIP),
+                                    immediate = policy,
+                                    nextTick = policy,
+                                ),
+                        )
+                        assertEquals(
+                            listOf("disposeAttachment", "tick", "runMicrotaskCheckpoint"),
+                            webView.propertyReads,
+                            "Resolved policies must not require a separate availability RPC",
+                        )
+                        webView.resetTraffic()
+
+                        withTimeout(1_000) { eventLoop.runAndComplete() }
+
+                        assertEquals(3, webView.functionCalls, "No observer was installed: $policy, removeTimers=$removeTimers")
+                        assertEquals(emptyList(), webView.nativeEvents)
+                        assertEquals(0, webView.functionResults.count { it.startsWith("[\"h\",") })
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun initialTickConsumesTheAttachmentWakeupWithoutPollingObservedWorkAgain() =
+        runTest {
+            withTimerWebView { context, eventLoop, webView ->
+                webView.delayTimerNotifications = true
+                context.evaluateScript("globalThis.timer = setTimeout(() => {}, 100)").close()
+                webView.resetTraffic()
+                val running = async { eventLoop.run() }
+                testScheduler.runCurrent()
+
+                assertFalse(running.isCompleted)
+                assertEquals(1, webView.functionCalls, "The first tick already captured all work; await the observer without another RPC")
+
+                context.evaluateScript("__fireBrowserTimer(timer)").close()
+                webView.delayedNotifications.forEach(webView.onMessage)
+                webView.delayedNotifications.clear()
+                withTimeout(1_000) { running.await() }
+            }
+        }
+
+    @Test
+    fun queuedWakeupsAreCoalescedAndDoNotAwaitNativeReplies() =
+        runTest {
+            withTimerWebView(attachOnEntry = false) { context, eventLoop, webView ->
+                eventLoop.attachTo(context)
+                webView.delayCallbackReplies = true
+                webView.resetTraffic()
+                repeat(2) { iteration ->
+                    context
+                        .evaluateScript(
+                            """
+                            globalThis.calls = 0;
+                            for (let i = 0; i < 100; i++) {
+                                process.nextTick(() => {
+                                    calls++;
+                                    setImmediate(() => { calls++; process.nextTick(() => calls++); });
+                                });
+                            }
+                            """.trimIndent(),
+                        ).close()
+                    assertEquals(iteration + 1, webView.nativeEvents.count { it == "queued" })
+                    withTimeout(1_000) { eventLoop.run() }
+                    assertEquals(300, context.evaluateScript("calls").use { it.int })
+                    assertEquals(
+                        iteration + 1,
+                        webView.nativeEvents.count { it == "queued" },
+                        "Callbacks queued inside tick need no notification",
+                    )
+                    assertTrue(
+                        webView.functionCalls <= 105 * (iteration + 1),
+                        "RPCs are bounded by callback ticks, the checkpoint and settling the one native wakeup job",
+                    )
+                    assertTrue(webView.delayedCallbackReplies.isNotEmpty(), "Native callback Promises are still unresolved")
+                }
+                webView.delayCallbackReplies = false
+                webView.flushCallbackReplies()
+            }
+        }
+
+    @Test
+    fun microtaskChainsDoNotWakeAnAlreadyDrainingQueue() =
+        runTest {
+            for (scheduler in listOf("setImmediate", "process.nextTick")) {
+                withTimerWebView(attachOnEntry = false) { context, eventLoop, webView ->
+                    eventLoop.attachTo(context)
+                    webView.delayCallbackReplies = true
+                    repeat(2) {
+                        webView.resetTraffic()
+                        context
+                            .evaluateScript(
+                                """
+                                globalThis.calls = 0;
+                                function work() {
+                                    if (++calls < 100) Promise.resolve().then(() => $scheduler(work));
+                                }
+                                $scheduler(work);
+                                """.trimIndent(),
+                            ).close()
+
+                        withTimeout(1_000) { eventLoop.run() }
+
+                        assertEquals(100, context.evaluateScript("calls").use { it.int }, scheduler)
+                        assertEquals(listOf("queued"), webView.nativeEvents, "Only the initial registration needs a wakeup: $scheduler")
+                        assertTrue(
+                            webView.functionCalls <= 104,
+                            "100 callbacks need at most 104 RPCs, including the initial wakeup job and checkpoint: $scheduler",
+                        )
+                        assertTrue(webView.delayedCallbackReplies.isNotEmpty(), "Queue progress must not await native replies")
+                    }
+                    webView.delayCallbackReplies = false
+                    webView.flushCallbackReplies()
+                }
+            }
+        }
+
+    @Test
+    fun nativeTimerIdsAndCancellationDoNotDependOnAcknowledgements() =
+        runTest {
+            withTimerWebView(attachOnEntry = false) { context, eventLoop, webView ->
+                eventLoop.attachTo(context)
+                webView.delayCallbackReplies = true
+                webView.resetTraffic()
+                context
+                    .evaluateScript(
+                        """
+                        globalThis.calls = 0;
+                        globalThis.timer = setTimeout(() => calls++, 1);
+                        globalThis.cancelled = setInterval(() => calls++, 1);
+                        globalThis.idsAreNumbers = typeof timer === 'number' && typeof cancelled === 'number';
+                        clearTimeout(cancelled);
+                        for (let i = 0; i < 100; i++) { clearInterval(cancelled); clearTimeout(-1); }
+                        """.trimIndent(),
+                    ).close()
+                assertTrue(context.evaluateScript("idsAreNumbers").use { it.boolean })
+                withTimeout(1_000) { eventLoop.run() }
+                assertEquals(1, context.evaluateScript("calls").use { it.int })
+                context.evaluateScript("clearTimeout(timer)").close()
+                assertEquals(2, webView.nativeEvents.count { it == "schedule" })
+                assertEquals(1, webView.nativeEvents.count { it == "cancel" }, "Only cancelling a live native timer needs a native call")
+                assertTrue(webView.delayedCallbackReplies.isNotEmpty())
+                webView.delayCallbackReplies = false
+                webView.flushCallbackReplies()
+            }
+        }
+
+    @Test
+    fun rejectedNativeTimerPromisesReleaseRegistrationsAndAreHandled() =
+        runTest {
+            withTimerWebView(attachOnEntry = false) { context, eventLoop, webView ->
+                context.evaluateScript(jsCaptureTimerMaps).close()
+                eventLoop.attachTo(context)
+                context
+                    .evaluateScript(
+                        """
+                        globalThis.Map = __originalMap;
+                        globalThis.handledRejections = 0;
+                        const originalCatch = Promise.prototype.catch;
+                        Promise.prototype.catch = function (handler) {
+                            return originalCatch.call(this, function (error) {
+                                if (error === 'test rejection') handledRejections++;
+                                return handler(error);
+                            });
+                        };
+                        """.trimIndent(),
+                    ).close()
+                webView.delayTimerNotifications = true
+                context.evaluateScript("globalThis.timer = setTimeout(() => {}, 100)").close()
+                context
+                    .evaluateScript(
+                        "globalThis.registry = __timerMaps.find(map => { const item = map.get(timer); return item && typeof item.callback === 'function'; })",
+                    ).close()
+                assertEquals(1, context.evaluateScript("registry.size").use { it.int })
+                webView.rejectNotification(webView.delayedNotifications.removeLast())
+                // The backing engine's rejection tracker also schedules host turns, even for handled
+                // rejections. Deliver those registrations; they are distinct from the rejected timer.
+                webView.flushTimerNotifications()
+                withTimeout(1_000) { eventLoop.run() }
+                assertEquals(0, context.evaluateScript("registry.size").use { it.int })
+                assertEquals(1, context.evaluateScript("handledRejections").use { it.int })
+
+                webView.delayTimerNotifications = true
+                context.evaluateScript("clearTimeout(setTimeout(() => {}, 100))").close()
+                assertEquals(2, webView.delayedNotifications.size)
+                webView.delayedNotifications
+                    .toList()
+                    .also { webView.delayedNotifications.clear() }
+                    .forEach(webView::rejectNotification)
+                webView.flushTimerNotifications()
+                withTimeout(1_000) { eventLoop.run() }
+                assertEquals(3, context.evaluateScript("handledRejections").use { it.int })
+            }
+        }
+
+    @Test
+    fun mixedObserversShareOnePendingBoundaryAndKeepIntervalTicksLocal() =
+        runTest {
+            withTimerWebView(attachOnEntry = false) { context, eventLoop, webView ->
+                context
+                    .evaluateScript(
+                        """
+                        (() => {
+                            const schedule = setTimeout;
+                            globalThis.setImmediate = (callback, ...args) => schedule(callback, 0, ...args);
+                            globalThis.clearImmediate = clearTimeout;
+                            globalThis.process = { nextTick(callback, ...args) {
+                                globalThis.nextTickId = schedule(callback, 0, ...args);
+                            } };
+                        })();
+                        """.trimIndent(),
+                    ).close()
+                eventLoop.attachTo(
+                    context,
+                    policies =
+                        JsEventLoopPolicies(
+                            timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                            immediate = JsEventLoopPolicy(OBSERVE, SKIP),
+                            nextTick = JsEventLoopPolicy(OBSERVE, SKIP),
+                        ),
+                )
+                webView.delayCallbackReplies = true
+                webView.resetTraffic()
+                context
+                    .evaluateScript(
+                        """
+                        globalThis.calls = 0;
+                        globalThis.interval = setInterval(() => calls++, 100);
+                        globalThis.immediate = setImmediate(() => calls++);
+                        process.nextTick(() => calls++);
+                        """.trimIndent(),
+                    ).close()
+                assertEquals(listOf("observe"), webView.nativeEvents)
+                val running = async { eventLoop.run() }
+                testScheduler.runCurrent()
+                assertFalse(running.isCompleted)
+                context
+                    .evaluateScript(
+                        """
+                        for (let i = 0; i < 100; i++) __fireBrowserTimer(interval);
+                        clearTimeout(interval);
+                        __fireBrowserTimer(immediate);
+                        """.trimIndent(),
+                    ).close()
+                testScheduler.runCurrent()
+                assertFalse(running.isCompleted)
+                assertEquals(
+                    listOf("observe"),
+                    webView.nativeEvents,
+                    "Repeating callbacks and other groups finishing do not cross the idle boundary",
+                )
+                context.evaluateScript("__fireBrowserTimer(nextTickId)").close()
+                withTimeout(1_000) { running.await() }
+                assertEquals(102, context.evaluateScript("calls").use { it.int })
+                assertEquals(listOf("observe", "observe"), webView.nativeEvents)
+                webView.delayCallbackReplies = false
+                webView.flushCallbackReplies()
+            }
+        }
+
+    @Test
+    fun tickSnapshotAccountsForObservedRegistrationsWithoutNotificationRoundTrips() =
+        runTest {
+            withTimerWebView(attachOnEntry = false) { context, eventLoop, webView ->
+                eventLoop.attachTo(context, policies = JsEventLoopPolicies(timers = JsEventLoopPolicy(OBSERVE, SKIP)))
+                context
+                    .evaluateScript(
+                        """
+                        globalThis.calls = 0;
+                        setImmediate(() => {
+                            for (let i = 0; i < 100; i++) clearTimeout(setTimeout(() => {}, 100));
+                            globalThis.timer = setTimeout(() => calls++, 100);
+                        });
+                        """.trimIndent(),
+                    ).close()
+                webView.resetTraffic()
+                val running = async { eventLoop.run() }
+                testScheduler.runCurrent()
+                assertFalse(running.isCompleted, "The tick snapshot must register the remaining observed work")
+                assertEquals(emptyList(), webView.nativeEvents, "The snapshot replaces all observe notifications inside tick")
+
+                context.evaluateScript("__fireBrowserTimer(timer)").close()
+                withTimeout(1_000) { running.await() }
+                assertEquals(1, context.evaluateScript("calls").use { it.int })
+                assertEquals(listOf("observe"), webView.nativeEvents, "External completion still needs a notification")
+            }
+        }
+
+    @Test
+    fun disposingAnObserverDoesNotNotifyAnAlreadyCancelledNativeLoop() =
+        runTest {
+            withTimerWebView { context, eventLoop, webView ->
+                context.evaluateScript("setTimeout(() => {}, 100)").close()
+                val running = async { eventLoop.run() }
+                testScheduler.runCurrent()
+                assertFalse(running.isCompleted)
+                webView.resetTraffic()
+
+                eventLoop.cancel()
+                withTimeout(1_000) { running.await() }
+
+                assertEquals(emptyList(), webView.nativeEvents)
+                assertEquals(1, webView.functionCalls, "One disposal RPC restores all observed functions")
+            }
+        }
+
     private suspend fun TestScope.withTimerWebView(
         attachOnEntry: Boolean = true,
         block: suspend (JsWebViewContext, JsEventLoop, TimerProtocolWebView) -> Unit,
@@ -180,7 +553,17 @@ class JsWebViewTimerObservationProtocolTest {
             val context = JsWebViewContext(webView)
             val eventLoop = JsEventLoop(coroutineContext)
             try {
-                if (attachOnEntry) eventLoop.attachTo(context, timerMode = JsTimerMode.OBSERVE)
+                if (attachOnEntry) {
+                    eventLoop.attachTo(
+                        context,
+                        policies =
+                            JsEventLoopPolicies(
+                                timers = JsEventLoopPolicy(OBSERVE, SKIP),
+                                immediate = JsEventLoopPolicy(KEEP, SKIP),
+                                nextTick = JsEventLoopPolicy(KEEP, SKIP),
+                            ),
+                    )
+                }
                 block(context, eventLoop, webView)
             } finally {
                 webView.failNextEvaluation = false
@@ -197,6 +580,41 @@ private class TimerProtocolWebView(
 ) : JsWebView {
     override var onMessage: (String) -> Unit = {}
     var delayTimerNotifications = false
+    var delayCallbackReplies = false
+    val delayedCallbackReplies = mutableListOf<String>()
+    val nativeEvents = mutableListOf<String>()
+    val functionResults = mutableListOf<String>()
+    val propertyReads = mutableListOf<String>()
+    var functionCalls = 0
+        private set
+    private val callRequests = mutableSetOf<String>()
+
+    fun resetTraffic() {
+        nativeEvents.clear()
+        functionResults.clear()
+        propertyReads.clear()
+        functionCalls = 0
+    }
+
+    fun rejectNotification(message: String) {
+        val id = message.substringAfter(',').substringBefore(',').toInt()
+        backing
+            .evaluateScript(
+                JsWebViewMessage.FailNativeCallback(id, JsWebViewProtocolValue.String("test rejection")).toScript(),
+            ).close()
+    }
+
+    fun flushCallbackReplies() {
+        delayedCallbackReplies.toList().also { delayedCallbackReplies.clear() }.forEach {
+            backing.evaluateScript(it).close()
+        }
+    }
+
+    fun flushTimerNotifications() {
+        delayTimerNotifications = false
+        delayedNotifications.toList().also { delayedNotifications.clear() }.forEach(onMessage)
+    }
+
     val delayedNotifications = mutableListOf<String>()
     private var timerListenerId: String? = null
     var failTickExtraction = false
@@ -206,7 +624,11 @@ private class TimerProtocolWebView(
         private set
 
     fun receiveMessage(message: String) {
+        RESULT.find(message)?.let {
+            if (callRequests.remove(it.groupValues[1])) functionResults += it.groupValues[2]
+        }
         val callbackId = CALLBACK_ID.find(message)?.groupValues?.get(1)
+        if (callbackId != null) EVENT.find(message)?.let { nativeEvents += it.groupValues[1] }
         if (delayTimerNotifications && callbackId != null) {
             if (timerListenerId == null) timerListenerId = callbackId
             if (callbackId == timerListenerId) {
@@ -218,6 +640,19 @@ private class TimerProtocolWebView(
     }
 
     override fun evaluateJavaScript(script: String) {
+        PROPERTY_READ
+            .find(script)
+            ?.groupValues
+            ?.get(1)
+            ?.let { propertyReads += it }
+        CALL.find(script)?.let {
+            functionCalls++
+            callRequests += it.groupValues[1]
+        }
+        if (delayCallbackReplies && script.contains(".dispatch([\"+\",")) {
+            delayedCallbackReplies += script
+            return
+        }
         if (failTickExtraction && TICK_EXTRACTION.containsMatchIn(script)) {
             failTickExtraction = false
             // The attachment script has installed its wrappers, but native code has not
@@ -248,8 +683,12 @@ private class TimerProtocolWebView(
     override fun close() {}
 
     private companion object {
+        val CALL = Regex("""\.dispatch\(\["c",\d+,.*],(\d+)\);$""")
+        val RESULT = Regex("""^\["r",(\d+),(.+)]$""")
+        val EVENT = Regex(""",\["(schedule|cancel|queued|observe)"(?:,|\])""")
         val CALLBACK_ID = Regex("""^\["f",\d+,(\d+),""")
         val TICK_EXTRACTION = Regex("""dispatch\(\["g",\d+,"tick"\]""")
+        val PROPERTY_READ = Regex("""dispatch\(\["g",\d+,"([^"]+)"\]""")
     }
 }
 

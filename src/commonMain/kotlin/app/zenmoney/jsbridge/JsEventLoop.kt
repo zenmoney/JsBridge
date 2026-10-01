@@ -5,6 +5,8 @@ import androidx.collection.mutableIntLongMapOf
 import androidx.collection.mutableIntObjectMapOf
 import androidx.collection.mutableObjectListOf
 import androidx.collection.mutableScatterMapOf
+import app.zenmoney.jsbridge.JsEventLoopPolicy.ExistingApiAction
+import app.zenmoney.jsbridge.JsEventLoopPolicy.MissingApiAction
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -16,10 +18,12 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -33,24 +37,66 @@ import kotlin.coroutines.resume
 
 private const val MICROTASK_CHECKPOINT_ITERATIONS = 100
 
-/** Selects who schedules and executes `setTimeout` and `setInterval` callbacks. */
-enum class JsTimerMode {
-    /** Install timers scheduled by this event loop. Also works in engines without browser timers. */
-    EVENT_LOOP,
+/**
+ * Policies for the JavaScript API groups connected by [JsEventLoop.attachTo].
+ * Each group defaults to replacing existing functions and installing missing ones.
+ *
+ * @property timers Policy for `setTimeout`, `setInterval`, `clearTimeout` and `clearInterval`, which share a timer ID pool.
+ * @property immediate Policy for `setImmediate` and `clearImmediate`.
+ * @property nextTick Policy for `process.nextTick`. Installing it creates `process` if it is absent.
+ */
+data class JsEventLoopPolicies(
+    val timers: JsEventLoopPolicy = JsEventLoopPolicy(ExistingApiAction.REPLACE, MissingApiAction.INSTALL),
+    val immediate: JsEventLoopPolicy = JsEventLoopPolicy(ExistingApiAction.REPLACE, MissingApiAction.INSTALL),
+    val nextTick: JsEventLoopPolicy = JsEventLoopPolicy(ExistingApiAction.REPLACE, MissingApiAction.INSTALL),
+)
 
-    /** Leave the existing timer functions untouched. Their work is not awaited by [JsEventLoop.run]. */
-    PRESERVE,
+/**
+ * How an API group is connected to [JsEventLoop]. A group is present only when all its members are functions.
+ * Otherwise [ifMissing] applies to the whole group, including any existing members.
+ *
+ * [ExistingApiAction.KEEP] with [MissingApiAction.SKIP] leaves properties untouched without reading getters.
+ * [ExistingApiAction.REPLACE] with [MissingApiAction.INSTALL] installs functions without reading the originals.
+ * Other combinations check availability and may invoke getters. Getter errors and failures to install or observe
+ * functions fail attachment; they are not treated as missing APIs. Failed attachment rolls back its changes.
+ */
+data class JsEventLoopPolicy(
+    val ifPresent: ExistingApiAction,
+    val ifMissing: MissingApiAction,
+) {
+    /** Action for a complete group of existing functions. */
+    enum class ExistingApiAction {
+        /** Leave the functions unchanged. Their work is not awaited by [JsEventLoop.run]. */
+        KEEP,
 
-    /**
-     * Wrap existing browser timer functions and await registrations made through the wrappers.
-     * The browser retains ownership of timing, IDs, callback execution and errors. Intervals keep
-     * [JsEventLoop.run] waiting until cleared. Cancelling the loop stops observation, not the timers.
-     *
-     * Timers created before attachment, calls through saved original functions, and string handlers
-     * are not observed. Returned callback promises are not awaited. Original clear functions saved
-     * before attachment bypass observation too; use the wrapped clear functions for observed timers.
-     */
-    OBSERVE,
+        /**
+         * Wrap existing functions and await registrations made through the wrappers. The original scheduler
+         * retains ownership of timing, handles, callback execution and errors. Unreplaceable functions cause
+         * attachment to fail. Intervals keep [JsEventLoop.run] waiting until cleared.
+         * Cancelling the loop stops observation, not the scheduled work, and restores the original functions
+         * if the installed wrappers have not been replaced or locked by the page.
+         *
+         * Work scheduled before attachment, calls through saved original functions, and string timer handlers
+         * are not observed. Returned callback promises are not awaited. Original clear functions saved before
+         * attachment bypass observation too; use the wrapped clear functions for observed work.
+         */
+        OBSERVE,
+
+        /** Replace the group with functions scheduled by this event loop. */
+        REPLACE,
+    }
+
+    /** Action for a group with missing or non-function members. */
+    enum class MissingApiAction {
+        /** Leave the entire group untouched. Its work is not awaited by [JsEventLoop.run]. */
+        SKIP,
+
+        /** Install the entire group with functions scheduled by this event loop. */
+        INSTALL,
+
+        /** Fail attachment with [JsException] identifying the missing group and function. */
+        FAIL,
+    }
 }
 
 // Job.cancel(cause) adds one framework wrapper. Any nested CancellationException is the explicitly supplied cause.
@@ -92,7 +138,7 @@ private fun <T : Any> ObjectList<T>.findNextIndex(
 
 private class JsMicrotaskCheckpoint(
     private val runCheckpoint: JsFunction,
-    private val disposeTimers: JsFunction?,
+    private val disposeAttachment: JsFunction?,
 ) : AutoCloseable {
     val context: JsContext
         get() = runCheckpoint.context
@@ -132,9 +178,9 @@ private class JsMicrotaskCheckpoint(
     override fun close() {
         // During WebView shutdown its runtime invokes disposal itself. Otherwise restore the
         // browser functions here; a failed navigation RPC must not strand loop completion.
-        if (disposeTimers != null) {
-            if (!disposeTimers.isClosed) runCatching { jsScoped(context) { disposeTimers() } }
-            disposeTimers.close()
+        if (disposeAttachment != null) {
+            if (!disposeAttachment.isClosed) runCatching { jsScoped(context) { disposeAttachment() } }
+            disposeAttachment.close()
         }
         runCheckpoint.close()
         var continuations: ArrayList<CancellableContinuation<Unit>>? = null
@@ -151,7 +197,7 @@ private class JsMicrotaskCheckpoint(
 
 /**
  * Coordinates JavaScript work and runs callbacks owned by this loop on the dispatcher supplied in [context].
- * Observed browser timer callbacks continue to execute in the browser.
+ * Observed callbacks continue to execute through their original scheduler.
  *
  * The context must contain a dispatcher confined to one thread. All [JsContext] operations associated with this
  * event loop, including [attachTo], must be performed on that dispatcher's thread. [run] and [runAndComplete] may be
@@ -183,7 +229,8 @@ class JsEventLoop(
                     microtaskCheckpoints.forEach { checkpoint -> checkpoint.close() }
                     microtaskCheckpoints.clear()
                     timerJobs.clear()
-                    observedTimerRevisions.clear()
+                    observedWorkRevisions.clear()
+                    queuedCallbacks.close()
                     completionException.complete(exception)
                     onCompletion(cause != null, exception)
                 }
@@ -198,31 +245,25 @@ class JsEventLoop(
     private val jsTicks = mutableObjectListOf<JsFunction>()
     private val microtaskCheckpoints = mutableObjectListOf<JsMicrotaskCheckpoint>()
     private val timerJobs = mutableScatterMapOf<String, Job>()
-    private val observedTimerRevisions = mutableIntLongMapOf()
+    private val observedWorkRevisions = mutableIntLongMapOf()
     private val lock = Mutex()
+    private val queuedCallbacks = Channel<Unit>(Channel.CONFLATED)
 
     @Volatile
     private var isCompleting = false
 
     /**
-     * Attaches [context] to this event loop.
+     * Attaches [context] using the API group [policies].
+     * By default existing APIs are replaced and missing APIs are installed.
+     * Reattaching the same context keeps its original configuration.
      *
      * Must be called on the thread of the dispatcher passed to [JsEventLoop]. May be called while the event loop is
      * running. Attaching to an already closed event loop is allowed; native timer registration will report that it is
      * closed.
      */
-    fun attachTo(context: JsContext) {
-        attachTo(context, timerMode = JsTimerMode.EVENT_LOOP)
-    }
-
-    /**
-     * Attaches [context] using [timerMode]. Must run on this loop's dispatcher thread.
-     * Reattaching the same context keeps its original configuration. [JsTimerMode.OBSERVE] requires
-     * existing browser timer functions; it never moves callback execution to the native dispatcher.
-     */
     fun attachTo(
         context: JsContext,
-        timerMode: JsTimerMode,
+        policies: JsEventLoopPolicies = JsEventLoopPolicies(),
     ) {
         check(!context.isClosed) { "JsContext is already closed" }
         require(context.core.eventLoop == null || context.core.eventLoop == this) { "JsContext already has an event loop" }
@@ -234,7 +275,7 @@ class JsEventLoop(
         context.core.eventLoop = this
         val (jsTick, microtaskCheckpoint) =
             try {
-                createAttachment(context, timerMode)
+                createAttachment(context, policies)
             } catch (error: Throwable) {
                 if (context.core.eventLoop === this) {
                     runCatching { detachFrom(context) }.exceptionOrNull()?.let(error::addSuppressed)
@@ -249,6 +290,7 @@ class JsEventLoop(
         }
         jsTicks.add(jsTick)
         microtaskCheckpoints.add(microtaskCheckpoint)
+        queuedCallbacks.trySend(Unit)
     }
 
     internal fun dispatch(block: () -> Unit) {
@@ -261,7 +303,7 @@ class JsEventLoop(
 
     internal fun detachFrom(context: JsContext) {
         require(context.core.eventLoop == this) { "JsContext is not attached to this event loop" }
-        observedTimerRevisions.remove(context.core.id)
+        observedWorkRevisions.remove(context.core.id)
         for (index in jsTicks.size - 1 downTo 0) {
             if (jsTicks[index].context === context) {
                 jsTicks.removeAt(index).close()
@@ -284,7 +326,7 @@ class JsEventLoop(
 
     private fun createAttachment(
         context: JsContext,
-        timerMode: JsTimerMode,
+        policies: JsEventLoopPolicies,
     ): Pair<JsFunction, JsMicrotaskCheckpoint> =
         jsScoped(context) {
             var timerEventsValid = true
@@ -298,8 +340,14 @@ class JsEventLoop(
                 JsFunction {
                     if (!timerEventsValid) return@JsFunction JsUndefined()
                     val event = it.getOrNull(0)?.stringOrNull
+                    if (event == "queued") {
+                        if (!isCompleting && job.isActive && !this.context.isClosed && this.context.core.eventLoop === this@JsEventLoop) {
+                            queuedCallbacks.trySend(Unit)
+                        }
+                        return@JsFunction JsUndefined()
+                    }
                     if (event == "observe") {
-                        updateObservedTimers(this.context, it[1].long, it[2].int > 0)
+                        updateObservedWork(this.context, it[1].long, it[2].int > 0)
                         return@JsFunction JsUndefined()
                     }
                     val id = it.getOrNull(1)?.intOrNull
@@ -350,7 +398,7 @@ class JsEventLoop(
                                 throw new TypeError("The \"callback\" argument must be of type function.");
                             }
                         }
-                        function createCallbackQueue (runMode) {
+                        function createCallbackQueue (runMode, notify = false) {
                             let pending = [];
                             let batch = null;
                             function removeFrom (queue, id) {
@@ -397,6 +445,7 @@ class JsEventLoop(
                                         callback: callback,
                                         args: args,
                                     });
+                                    if (notify) notifyQueuedCallbacks();
                                     return id;
                                 },
                                 remove(id) {
@@ -433,7 +482,15 @@ class JsEventLoop(
                                     };
                                     scheduled.set(id, item);
                                     try {
-                                        nativeTimerEvent("schedule", id, Number(delay) || 0, shouldRepeat);
+                                        const result = nativeTimerEvent("schedule", id, Number(delay) || 0, shouldRepeat);
+                                        // WebView native functions return Promises. IDs are allocated locally;
+                                        // a rejected registration must release its callback asynchronously.
+                                        if (result && typeof result.catch === 'function') {
+                                            result.catch(() => {
+                                                scheduled.delete(id);
+                                                timerQueue.remove(id);
+                                            });
+                                        }
                                     } catch (e) {
                                         scheduled.delete(id);
                                         throw e;
@@ -444,9 +501,9 @@ class JsEventLoop(
                                     if (typeof id !== "number") {
                                         return;
                                     }
-                                    scheduled.delete(id);
+                                    const wasScheduled = scheduled.delete(id);
                                     timerQueue.remove(id);
-                                    nativeTimerEvent("cancel", id);
+                                    if (wasScheduled) ignoreRejection(nativeTimerEvent("cancel", id));
                                 },
                                 activate(id) {
                                     if (typeof id !== "number") {
@@ -463,86 +520,97 @@ class JsEventLoop(
                                 },
                             };
                         }
-                        const nextTickQueue = createCallbackQueue(RUN_ALL);
+                        const nextTickQueue = createCallbackQueue(RUN_ALL, true);
                         const timerQueue = createCallbackQueue(RUN_ONE);
-                        const immediateQueue = createCallbackQueue(RUN_ONE);
-                        const nativeTimerScheduler = ${timerMode == JsTimerMode.EVENT_LOOP}
-                            ? createNativeTimerScheduler(timerQueue) : null;
-                        let observedTimerRevision = 0;
-                        let observedTimerCount = 0;
-                        let timerStateWithoutCallbacks = '0:0:0';
-                        let timerStateWithCallbacks = '1:0:0';
-                        let disposeTimers = null;
+                        const immediateQueue = createCallbackQueue(RUN_ONE, true);
+                        let nativeTimerScheduler = null;
+                        let observedWorkRevision = 0;
+                        let observedWorkCount = 0;
+                        let stateWithoutCallbacks = '0:0:0';
+                        let stateWithCallbacks = '1:0:0';
                         let timerEventsEnabled = false;
-                        // Surface spoofers can leave configurable read-only placeholders.
-                        // Assignment silently ignores them; defineProperty replaces them explicitly.
-                        function installProperty (target, name, value) {
-                            const descriptor = Object.getOwnPropertyDescriptor(target, name);
-                            if (descriptor ? descriptor.configurable : Object.isExtensible(target)) {
-                                Object.defineProperty(target, name, {
-                                    value, writable: true, configurable: true,
-                                    enumerable: descriptor ? descriptor.enumerable : true,
-                                });
-                                return true;
-                            }
-                            if (descriptor && (descriptor.writable || descriptor.set)) {
-                                target[name] = value;
-                                if (target[name] === value) return true;
-                            }
-                            // Node-style shims are optional in browser timer modes. A page's
-                            // locked property must not prevent attachment to an otherwise live realm.
-                            if (${timerMode != JsTimerMode.EVENT_LOOP}) return false;
-                            throw new TypeError('Cannot install event loop property ' + name);
+                        let queueWakeupPending = false;
+                        let ticking = false;
+                        let disposed = false;
+                        let listener = nativeTimerEvent;
+                        let unregister = null;
+                        const installedProperties = [];
+                        const observers = [];
+                        function ignoreNotificationError() {}
+                        function ignoreRejection (result) {
+                            if (result && typeof result.catch === 'function') result.catch(ignoreNotificationError);
                         }
-                        installProperty(globalThis, 'clearImmediate', function clearImmediate (id) {
-                            immediateQueue.remove(id);
-                        });
-                        installProperty(globalThis, 'setImmediate', function setImmediate (callback, ...args) {
-                            return immediateQueue.add(callback, args);
-                        });
-                        try {
-                            if (${timerMode == JsTimerMode.OBSERVE}) {
-                                const names = ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval'];
-                                const originals = names.map(name => globalThis[name]);
-                                const descriptors = names.map(name => Object.getOwnPropertyDescriptor(globalThis, name));
-                                names.forEach((name, index) => {
-                                    const descriptor = descriptors[index];
-                                    if (typeof originals[index] !== 'function' ||
-                                        (descriptor && !descriptor.configurable && !descriptor.writable)) {
-                                        throw new TypeError('Cannot observe browser timer function ' + name);
+                        function notifyQueuedCallbacks () {
+                            if (!timerEventsEnabled || disposed || queueWakeupPending || ticking) return;
+                            queueWakeupPending = true;
+                            try {
+                                ignoreRejection(nativeTimerEvent("queued"));
+                            } catch (_) {}
+                        }
+                        // Define properties explicitly: assignment can silently ignore read-only placeholders.
+                        // Observers preserve descriptor flags; replacements make configurable properties writable.
+                        function installProperty (target, name, value, observed = false) {
+                            const descriptor = Object.getOwnPropertyDescriptor(target, name);
+                            if (descriptor ? !descriptor.configurable && !descriptor.writable : !Object.isExtensible(target)) {
+                                throw new TypeError('Cannot install event loop property ' + name);
+                            }
+                            Object.defineProperty(target, name, {
+                                value,
+                                writable: observed && descriptor && 'writable' in descriptor ? descriptor.writable : true,
+                                configurable: descriptor ? descriptor.configurable : true,
+                                enumerable: descriptor ? descriptor.enumerable : true,
+                            });
+                            installedProperties.push({ target, name, value, descriptor, observed });
+                        }
+                        function restoreProperties (rollback) {
+                            for (let i = installedProperties.length - 1; i >= 0; i--) {
+                                const item = installedProperties[i];
+                                if (!rollback && !item.observed) continue;
+                                try {
+                                    const current = Object.getOwnPropertyDescriptor(item.target, item.name);
+                                    if (current && current.value === item.value) {
+                                        if (item.descriptor) Object.defineProperty(item.target, item.name, item.descriptor);
+                                        else delete item.target[item.name];
                                     }
-                                });
-                                const scheduled = new Map();
-                                let running = 0;
-                                let disposed = false;
-                                let listener = nativeTimerEvent;
-                                let unregister = null;
-                                function ignoreNotificationError() {}
-                                function changed() {
-                                    const wasPending = observedTimerCount > 0;
-                                    observedTimerCount = scheduled.size + running;
-                                    const isPending = observedTimerCount > 0;
-                                    // Only crossing the idle boundary changes native waiting. In particular,
-                                    // an interval needs no bridge calls or Promises for its individual ticks.
-                                    if (wasPending === isPending) return;
-                                    observedTimerRevision++;
-                                    const state = ':' + observedTimerRevision + ':' + (isPending ? '1' : '0');
-                                    timerStateWithoutCallbacks = '0' + state;
-                                    timerStateWithCallbacks = '1' + state;
-                                    if (disposed || !timerEventsEnabled) return;
-                                    try {
-                                        const result = listener("observe", observedTimerRevision, observedTimerCount);
-                                        // A WebView native callback returns a Promise. Observation must never change
-                                        // browser exception handling, including when the bridge is being disposed.
-                                        if (result && typeof result.catch === 'function') result.catch(ignoreNotificationError);
-                                    } catch (_) {}
-                                }
-                                function schedule(original, repeat, receiver, args) {
-                                    'use strict';
+                                } catch (_) {} // Frozen observer wrappers continue to delegate after disposal.
+                            }
+                        }
+                        function changeObservedWork (delta) {
+                            const wasPending = observedWorkCount > 0;
+                            observedWorkCount += delta;
+                            const isPending = observedWorkCount > 0;
+                            // Only crossing the shared idle boundary changes native waiting.
+                            if (wasPending === isPending) return;
+                            observedWorkRevision++;
+                            const state = ':' + observedWorkRevision + ':' + (isPending ? '1' : '0');
+                            stateWithoutCallbacks = '0' + state;
+                            stateWithCallbacks = '1' + state;
+                            // tick returns this same snapshot, so changes inside its callbacks need no
+                            // separate native notification (or WebView callback Promise).
+                            if (disposed || !timerEventsEnabled || ticking) return;
+                            try {
+                                // WebView callbacks return Promises. Observation must preserve scheduler errors.
+                                ignoreRejection(listener("observe", observedWorkRevision, observedWorkCount));
+                            } catch (_) {}
+                        }
+                        function createObserver (callbackKey = false, coerceTimerId = false) {
+                            const scheduled = new Map();
+                            let running = 0;
+                            let previousCount = 0;
+                            function changed() {
+                                if (disposed) return;
+                                const count = scheduled.size + running;
+                                const delta = count - previousCount;
+                                previousCount = count;
+                                changeObservedWork(delta);
+                            }
+                            const observer = {
+                                schedule(original, repeat, receiver, args) {
                                     const callback = args[0];
-                                    // Preserve browser string/TrustedScript handling and its CSP checks unchanged.
+                                    // Preserve string/TrustedScript handling and CSP checks in the original API.
                                     if (disposed || typeof callback !== 'function') return original.apply(receiver, args);
                                     let id;
+                                    let finished = false;
                                     const wrapped = function () {
                                         if (disposed) return callback.apply(this, arguments);
                                         running++;
@@ -550,104 +618,167 @@ class JsEventLoop(
                                         try {
                                             return callback.apply(this, arguments);
                                         } finally {
+                                            finished = true;
                                             running--;
-                                            if (!repeat && scheduled.get(id) === wrapped) scheduled.delete(id);
+                                            const key = callbackKey ? wrapped : id;
+                                            if (!repeat && scheduled.get(key) === wrapped) scheduled.delete(key);
                                             changed();
                                         }
                                     };
                                     args[0] = wrapped;
                                     id = original.apply(receiver, args);
-                                    // Delay coercion can dispose the attachment reentrantly. Do not repopulate
-                                    // its cleared map with a callback that will now bypass observation.
-                                    if (!disposed) {
-                                        scheduled.set(id, wrapped);
+                                    // Coercion can dispose the attachment, and a custom scheduler can call back
+                                    // synchronously. Neither case should leave a phantom pending callback.
+                                    if (!disposed && (repeat || !finished)) {
+                                        scheduled.set(callbackKey ? wrapped : id, wrapped);
                                         changed();
                                     }
                                     return id;
-                                }
-                                function clear(original, receiver, args) {
+                                },
+                                clear(original, receiver, args) {
                                     if (disposed) return original.apply(receiver, args);
-                                    // Web IDL long conversion, performed once even for an object with valueOf().
-                                    const id = (+args[0]) | 0;
+                                    // Browser timers use Web IDL long conversion, exactly once. Immediate handles
+                                    // belong to their scheduler and may be opaque objects: never coerce them.
+                                    const id = coerceTimerId ? (+args[0]) | 0 : args[0];
                                     args[0] = id;
                                     const result = original.apply(receiver, args);
                                     if (scheduled.delete(id)) changed();
                                     return result;
+                                },
+                                dispose() { scheduled.clear(); },
+                            };
+                            observers.push(observer);
+                            return observer;
+                        }
+                        function resolveApiGroup (group, getTarget, names, ifPresent, ifMissing) {
+                            // These combinations do not need to inspect existing functions.
+                            if (ifPresent === 'KEEP' && ifMissing === 'SKIP') return { action: 'KEEP' };
+                            const target = getTarget();
+                            if (ifPresent === 'REPLACE' && ifMissing === 'INSTALL') return { action: 'REPLACE', target };
+                            const originals = names.map(name => target && target[name]);
+                            const missingIndex = originals.findIndex(original => typeof original !== 'function');
+                            if (missingIndex !== -1) {
+                                if (ifMissing === 'FAIL') {
+                                    throw new TypeError('Missing event loop API group ' + group + ': ' + names[missingIndex]);
                                 }
-                                const wrappers = [
-                                    function setTimeout(callback, delay) { 'use strict'; return schedule(originals[0], false, this, arguments); },
-                                    function setInterval(callback, delay) { 'use strict'; return schedule(originals[1], true, this, arguments); },
-                                    function clearTimeout(id) { 'use strict'; return clear(originals[2], this, arguments); },
-                                    function clearInterval(id) { 'use strict'; return clear(originals[3], this, arguments); },
-                                ];
-                                function dispose() {
-                                    if (disposed) return;
-                                    disposed = true;
-                                    listener = null;
-                                    if (unregister) { unregister(); unregister = null; }
-                                    scheduled.clear();
-                                    observedTimerCount = 0;
-                                    names.forEach((name, index) => {
-                                        try {
-                                            const current = Object.getOwnPropertyDescriptor(globalThis, name);
-                                            if (current && current.value === wrappers[index]) {
-                                                if (descriptors[index]) Object.defineProperty(globalThis, name, descriptors[index]);
-                                                else delete globalThis[name];
-                                            }
-                                        } catch (_) {} // A page may freeze the global after attachment; wrappers now delegate only.
-                                    });
-                                }
-                                disposeTimers = dispose;
-                                try {
-                                    names.forEach((name, index) => {
-                                        const descriptor = descriptors[index];
-                                        Object.defineProperty(globalThis, name, {
-                                            value: wrappers[index],
-                                            writable: descriptor && 'writable' in descriptor ? descriptor.writable : true,
-                                            enumerable: descriptor ? descriptor.enumerable : true,
-                                            configurable: descriptor ? descriptor.configurable : true,
-                                        });
-                                    });
-                                    const bridge = $JS_WEB_VIEW_BRIDGE;
-                                    if (bridge && typeof bridge.addDisposeCallback === 'function') {
-                                        unregister = bridge.addDisposeCallback(dispose);
-                                    }
-                                } catch (error) {
-                                    dispose();
-                                    throw error;
-                                }
-                            } else if (${timerMode == JsTimerMode.EVENT_LOOP}) {
-                                globalThis.clearInterval = function clearInterval (id) {
-                                    nativeTimerScheduler.remove(id);
-                                };
-                                globalThis.clearTimeout = function clearTimeout (id) {
-                                    nativeTimerScheduler.remove(id);
-                                };
-                                globalThis.setInterval = function setInterval (callback, delay, ...args) {
-                                    return nativeTimerScheduler.schedule(callback, args, delay, true);
-                                };
-                                globalThis.setTimeout = function setTimeout (callback, delay, ...args) {
-                                    return nativeTimerScheduler.schedule(callback, args, delay);
-                                };
+                                return { action: ifMissing === 'INSTALL' ? 'REPLACE' : 'KEEP', target };
                             }
-                            const existingProcess = globalThis.process;
-                            const process = existingProcess || {};
-                            if (typeof process === 'object' || typeof process === 'function') {
-                                if (existingProcess || installProperty(globalThis, 'process', process)) {
-                                    installProperty(process, 'nextTick', function nextTick (callback, ...args) {
-                                        nextTickQueue.add(callback, args);
-                                    });
+                            if (ifPresent === 'OBSERVE') {
+                                names.forEach(name => {
+                                    const descriptor = Object.getOwnPropertyDescriptor(target, name);
+                                    if (descriptor && !descriptor.configurable && !descriptor.writable) {
+                                        throw new TypeError('Cannot observe event loop function ' + name);
+                                    }
+                                });
+                            }
+                            return { action: ifPresent, target, originals };
+                        }
+                        function disposeAttachment (rollback = false) {
+                            if (!disposed) {
+                                disposed = true;
+                                timerEventsEnabled = false;
+                                // Native completion/detachment already retires the observer's waiter.
+                                // Update the snapshot without sending an idle notification back to native.
+                                changeObservedWork(-observedWorkCount);
+                                listener = null;
+                                if (unregister) {
+                                    try { unregister(); } catch (_) {}
+                                    unregister = null;
                                 }
-                            } else if (${timerMode == JsTimerMode.EVENT_LOOP}) {
-                                throw new TypeError('Cannot install event loop property process');
+                                observers.forEach(observer => observer.dispose());
+                            }
+                            restoreProperties(rollback);
+                        }
+                        try {
+                            const timers = resolveApiGroup('TIMERS', () => globalThis,
+                                ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval'],
+                                '${policies.timers.ifPresent}',
+                                '${policies.timers.ifMissing}');
+                            if (timers.action === 'OBSERVE') {
+                                const originals = timers.originals;
+                                const observer = createObserver(false, true);
+                                installProperty(globalThis, 'setTimeout', function setTimeout(callback, delay) {
+                                    'use strict'; return observer.schedule(originals[0], false, this, arguments);
+                                }, true);
+                                installProperty(globalThis, 'setInterval', function setInterval(callback, delay) {
+                                    'use strict'; return observer.schedule(originals[1], true, this, arguments);
+                                }, true);
+                                installProperty(globalThis, 'clearTimeout', function clearTimeout(id) {
+                                    'use strict'; return observer.clear(originals[2], this, arguments);
+                                }, true);
+                                installProperty(globalThis, 'clearInterval', function clearInterval(id) {
+                                    'use strict'; return observer.clear(originals[3], this, arguments);
+                                }, true);
+                            } else if (timers.action === 'REPLACE') {
+                                nativeTimerScheduler = createNativeTimerScheduler(timerQueue);
+                                installProperty(globalThis, 'clearInterval', function clearInterval (id) {
+                                    nativeTimerScheduler.remove(id);
+                                });
+                                installProperty(globalThis, 'clearTimeout', function clearTimeout (id) {
+                                    nativeTimerScheduler.remove(id);
+                                });
+                                installProperty(globalThis, 'setInterval', function setInterval (callback, delay, ...args) {
+                                    return nativeTimerScheduler.schedule(callback, args, delay, true);
+                                });
+                                installProperty(globalThis, 'setTimeout', function setTimeout (callback, delay, ...args) {
+                                    return nativeTimerScheduler.schedule(callback, args, delay);
+                                });
+                            }
+                            const immediate = resolveApiGroup('IMMEDIATE', () => globalThis, ['setImmediate', 'clearImmediate'],
+                                '${policies.immediate.ifPresent}',
+                                '${policies.immediate.ifMissing}');
+                            if (immediate.action === 'OBSERVE') {
+                                const originals = immediate.originals;
+                                const observer = createObserver();
+                                installProperty(globalThis, 'setImmediate', function setImmediate(callback) {
+                                    'use strict'; return observer.schedule(originals[0], false, this, arguments);
+                                }, true);
+                                installProperty(globalThis, 'clearImmediate', function clearImmediate(id) {
+                                    'use strict'; return observer.clear(originals[1], this, arguments);
+                                }, true);
+                            } else if (immediate.action === 'REPLACE') {
+                                installProperty(globalThis, 'clearImmediate', function clearImmediate (id) {
+                                    immediateQueue.remove(id);
+                                });
+                                installProperty(globalThis, 'setImmediate', function setImmediate (callback, ...args) {
+                                    return immediateQueue.add(callback, args);
+                                });
+                            }
+                            const nextTick = resolveApiGroup('NEXT_TICK', () => globalThis.process, ['nextTick'],
+                                '${policies.nextTick.ifPresent}',
+                                '${policies.nextTick.ifMissing}');
+                            if (nextTick.action === 'OBSERVE') {
+                                const process = nextTick.target;
+                                const originals = nextTick.originals;
+                                // nextTick has no cancellation handle; each callback needs its own registry key.
+                                const observer = createObserver(true);
+                                installProperty(process, 'nextTick', function nextTick(callback) {
+                                    'use strict'; return observer.schedule(originals[0], false, this, arguments);
+                                }, true);
+                            } else if (nextTick.action === 'REPLACE') {
+                                const existingProcess = nextTick.target;
+                                const process = existingProcess == null ? {} : existingProcess;
+                                if (typeof process !== 'object' && typeof process !== 'function') {
+                                    throw new TypeError('Cannot install event loop property process');
+                                }
+                                if (existingProcess == null) installProperty(globalThis, 'process', process);
+                                installProperty(process, 'nextTick', function nextTick (callback, ...args) {
+                                    nextTickQueue.add(callback, args);
+                                });
+                            }
+                            if (observers.length > 0) {
+                                const bridge = $JS_WEB_VIEW_BRIDGE;
+                                if (bridge && typeof bridge.addDisposeCallback === 'function') {
+                                    unregister = bridge.addDisposeCallback(disposeAttachment);
+                                }
                             }
                         } catch (error) {
-                            if (disposeTimers) disposeTimers();
+                            disposeAttachment(true);
                             throw error;
                         }
-                        // Accessors above can schedule timers and then throw. Publish observation
-                        // only once installation has succeeded; tick also captures those registrations.
-                        timerEventsEnabled = true;
+                        // Accessors can schedule work and then throw. Publish observation only after
+                        // installation succeeds; tick also captures registrations made during installation.
+                        timerEventsEnabled = !disposed;
                         function runCallbacks (timerId) {
                             if (nativeTimerScheduler) nativeTimerScheduler.activate(timerId);
                             const didRunNextTicks = nextTickQueue.run();
@@ -666,23 +797,37 @@ class JsEventLoop(
                                 immediateQueue.isNotEmpty();
                         }
                         function tick (timerId) {
-                            const didRun = runCallbacks(timerId);
+                            ticking = true;
+                            let didRun = false;
+                            try {
+                                didRun = runCallbacks(timerId);
+                            } finally {
+                                ticking = false;
+                                // A true result makes native tick again, including work queued by
+                                // the following microtasks. Only an idle tick needs another wakeup.
+                                queueWakeupPending = didRun;
+                            }
                             // Capture pending browser work in the same RPC as the tick. Native
                             // notifications may still be in transit; their revisions cannot overwrite this snapshot.
-                            return ${timerMode == JsTimerMode.OBSERVE}
-                                ? (didRun ? timerStateWithCallbacks : timerStateWithoutCallbacks)
+                            return observers.length > 0
+                                ? (didRun ? stateWithCallbacks : stateWithoutCallbacks)
                                 : didRun;
                         }
-                        async function runMicrotaskCheckpoint () {
+                        async function drainMicrotasks () {
                             for (let i = 0; i < $MICROTASK_CHECKPOINT_ITERATIONS; i++) {
                                 await undefined;
                             }
-                            microtaskCallback.apply(this, arguments);
+                            ignoreRejection(microtaskCallback.apply(this, arguments));
+                        }
+                        function runMicrotaskCheckpoint () {
+                            // The native continuation is completed by microtaskCallback, not this Promise.
+                            // Return undefined to avoid exporting and later releasing a Promise handle per RPC.
+                            ignoreRejection(drainMicrotasks.apply(this, arguments));
                         }
                         return {
                             tick: tick,
                             runMicrotaskCheckpoint: runMicrotaskCheckpoint,
-                            disposeTimers: disposeTimers,
+                            disposeAttachment: observers.length > 0 ? disposeAttachment : null,
                         };
                     })()
                     """.trimIndent(),
@@ -690,18 +835,19 @@ class JsEventLoop(
                     "microtaskCallback" to microtaskCallback,
                 ).let {
                     it as JsObject
-                    val disposeTimers = it["disposeTimers"] as? JsFunction
+                    val disposeAttachment = it["disposeAttachment"] as? JsFunction
                     var tick: JsFunction? = null
                     try {
                         tick = (it["tick"] as JsFunction).escape()
                         microtaskCheckpoint =
                             JsMicrotaskCheckpoint(
                                 runCheckpoint = (it["runMicrotaskCheckpoint"] as JsFunction).escape(),
-                                disposeTimers = disposeTimers?.escape(),
+                                // OBSERVE may resolve to SKIP or INSTALL. Only actual observers need cleanup.
+                                disposeAttachment = disposeAttachment?.escape(),
                             )
                         tick to microtaskCheckpoint
                     } catch (e: Throwable) {
-                        if (disposeTimers != null) runCatching { disposeTimers() }
+                        if (disposeAttachment != null) runCatching { disposeAttachment(JsBoolean(true)) }
                         tick?.close()
                         throw e
                     }
@@ -720,6 +866,9 @@ class JsEventLoop(
         if (!job.isActive) {
             return false
         }
+        // This scan covers every context, including work that already signalled a wakeup. Consume
+        // that signal before scanning; notifications arriving during/after the scan still wake run().
+        queuedCallbacks.tryReceive()
         var timerId = timerId
         var shouldContinue: Boolean
         var didRun = false
@@ -756,7 +905,7 @@ class JsEventLoop(
                                         revision = revision * 10 + (state[index] - '0')
                                         index++
                                     }
-                                    updateObservedTimers(tick.context, revision, state[index + 1] == '1')
+                                    updateObservedWork(tick.context, revision, state[index + 1] == '1')
                                     state[0] == '1'
                                 } else {
                                     result.boolean
@@ -841,12 +990,21 @@ class JsEventLoop(
         }
         while (true) {
             var hasChildren = false
-            job.children.forEach {
+            job.children.forEach { child ->
                 hasChildren = true
-                it.join()
-                withContext(coroutineContext) {
-                    tick()
-                }
+                do {
+                    // A pending native Promise can depend on a callback queued after the last tick.
+                    // Wake for that work while still waiting for the Promise's coroutine to finish.
+                    select<Unit> {
+                        child.onJoin { }
+                        queuedCallbacks.onReceiveCatching { }
+                    }
+                    withContext(coroutineContext) {
+                        // An eager dispatcher must not execute callbacks inside their registration.
+                        yield()
+                        tick()
+                    }
+                } while (!child.isCompleted)
             }
             if (hasChildren) continue
             val shouldContinueAfterMicrotasks =
@@ -866,6 +1024,9 @@ class JsEventLoop(
                                     null
                                 }
                             checkpoint.await()
+                            // The WebView acknowledgement resumes us from a native callback job.
+                            // Let that job finish before checking whether the loop is idle again.
+                            yield()
                             if (index < microtaskCheckpoints.size && microtaskCheckpoints[index] === checkpoint) {
                                 index++
                             } else {
@@ -884,17 +1045,17 @@ class JsEventLoop(
         }
     }
 
-    private fun updateObservedTimers(
+    private fun updateObservedWork(
         context: JsContext,
         revision: Long,
-        hasPendingTimers: Boolean,
+        hasPendingWork: Boolean,
     ) {
         if (isCompleting || !job.isActive || context.isClosed || context.core.eventLoop !== this) return
         val contextId = context.core.id
-        if (revision <= observedTimerRevisions.getOrDefault(contextId, -1L)) return
-        observedTimerRevisions[contextId] = revision
-        val jobId = "$contextId.browser"
-        if (hasPendingTimers) {
+        if (revision <= observedWorkRevisions.getOrDefault(contextId, -1L)) return
+        observedWorkRevisions[contextId] = revision
+        val jobId = "$contextId.observed"
+        if (hasPendingWork) {
             if (jobId !in timerJobs) timerJobs[jobId] = Job(job)
         } else {
             (timerJobs.remove(jobId) as? CompletableJob)?.complete()

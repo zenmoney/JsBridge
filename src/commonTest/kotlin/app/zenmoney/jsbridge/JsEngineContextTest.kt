@@ -1,7 +1,11 @@
 package app.zenmoney.jsbridge
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -11,6 +15,36 @@ import kotlin.test.assertTrue
 
 class JsEngineContextTest : JsContextTest() {
     override fun createContext(): JsContext = JsContext()
+
+    @Test
+    fun queuedCallbacksDoNotReenterRegistrationWithEagerDispatcher() =
+        runTest(UnconfinedTestDispatcher()) {
+            val eventLoop = JsEventLoop(coroutineContext).apply { attachTo(context) }
+            try {
+                jsScoped(context) {
+                    val start = CompletableDeferred<Unit>()
+                    val result =
+                        JsPromise {
+                            start.await()
+                            eval("new Promise(resolve => setImmediate(() => process.nextTick(() => resolve(42))))").await()
+                        }
+                    val running = async { eventLoop.run() }
+                    try {
+                        eval("globalThis.registering = true; globalThis.reentered = false")
+                        start.complete(Unit)
+                        eval("setImmediate(() => { reentered = registering; }); registering = false")
+                        withTimeout(1_000) { running.await() }
+                        assertEquals(42, withTimeout(1_000) { result.await().int })
+                        assertEquals(false, eval("reentered").boolean)
+                    } finally {
+                        running.cancelAndJoin()
+                    }
+                }
+            } finally {
+                eventLoop.cancel()
+                withTimeout(1_000) { eventLoop.run() }
+            }
+        }
 
     @Test
     fun runsZeroDelayTimeoutWithEagerDispatcher() =
