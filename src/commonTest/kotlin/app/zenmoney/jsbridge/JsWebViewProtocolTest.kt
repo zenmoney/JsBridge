@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
 class JsWebViewProtocolTest {
     @Test
     fun webViewRuntimeEmbedsOnlyMinimalExpressionCore() {
-        assertTrue(jsWebViewRuntimeScript.length - jsWebViewAcornFactorySource.length < 42_000)
+        assertTrue(jsWebViewRuntimeScript.length - jsWebViewAcornFactorySource.length < 43_000)
         assertTrue("function encodeObject(" !in jsWebViewRuntimeScript)
         assertTrue("function encodeDate(" !in jsWebViewRuntimeScript)
         assertTrue("typedArrayDefinitions" !in jsWebViewRuntimeScript)
@@ -21,7 +21,7 @@ class JsWebViewProtocolTest {
         JsContext().use { context ->
             context
                 .evaluateScript(
-                    "globalThis.window = globalThis; delete globalThis.$JS_WEB_VIEW_BRIDGE_OBJECT; null",
+                    "globalThis.window = globalThis; delete $JS_WEB_VIEW_BRIDGE; null",
                 ).use { }
             context
                 .evaluateScript(
@@ -38,7 +38,7 @@ class JsWebViewProtocolTest {
             assertEquals("null", runtimeError)
 
             assertTrue(
-                (context.evaluateScript("typeof globalThis.$JS_WEB_VIEW_BRIDGE_OBJECT === 'object'") as JsBoolean)
+                (context.evaluateScript("typeof $JS_WEB_VIEW_BRIDGE === 'object'") as JsBoolean)
                     .use { it.toBoolean() },
             )
         }
@@ -60,23 +60,23 @@ class JsWebViewProtocolTest {
                                 else globalThis.__webViewProtocolMessages.push(message);
                             }
                         };
-                        delete globalThis.$JS_WEB_VIEW_BRIDGE_OBJECT;
+                        delete $JS_WEB_VIEW_BRIDGE;
                         $jsWebViewRuntimeScript
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "null"], 1);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "false"], 2);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "true"], 3);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "2.5"], 4);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "'line\\u2028separator'"], 5);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "undefined"], 6);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "NaN"], 7);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "Infinity"], 8);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "-Infinity"], 9);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "-0"], 10);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "9007199254740993n"], 11);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["s", 0, "__decodedValue", true], 12);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "globalThis.__decodedValue"], 13);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["s", 0, "__decodedValue", ["n", "-0"]], 14);
-                        $JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["w", "Object.is(globalThis.__decodedValue, -0)"], 15);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "null"], 1);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "false"], 2);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "true"], 3);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "2.5"], 4);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "'line\\u2028separator'"], 5);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "undefined"], 6);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "NaN"], 7);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "Infinity"], 8);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "-Infinity"], 9);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "-0"], 10);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "9007199254740993n"], 11);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["s", 0, "__decodedValue", true], 12);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "globalThis.__decodedValue"], 13);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["s", 0, "__decodedValue", ["n", "-0"]], 14);
+                        $JS_WEB_VIEW_BRIDGE.dispatch(["w", "Object.is(globalThis.__decodedValue, -0)"], 15);
                         globalThis.__webViewProtocolMessages.join("\n");
                         """.trimIndent(),
                     ) as JsString
@@ -123,7 +123,7 @@ class JsWebViewProtocolTest {
             command.value,
         )
         assertEquals(
-            """__appZenmoneyJsBridge.dispatch(["c",7,null,["a\nb",["h",9]]],5);""",
+            """$JS_WEB_VIEW_BRIDGE.dispatch(["c",7,null,["a\nb",["h",9]]],5);""",
             command.toScript(5),
         )
     }
@@ -146,7 +146,7 @@ class JsWebViewProtocolTest {
             command.value,
         )
         assertEquals(
-            """__appZenmoneyJsBridge.dispatch(["v",7,["o",1,{"name":"Ada","self":["r",1]}],["external",["h",9]]],5);""",
+            """$JS_WEB_VIEW_BRIDGE.dispatch(["v",7,["o",1,{"name":"Ada","self":["r",1]}],["external",["h",9]]],5);""",
             command.toScript(5),
         )
     }
@@ -191,7 +191,7 @@ class JsWebViewProtocolTest {
         val script = JsWebViewMessage.UpdateRefCounts(intIntMapOf(7, 1, 8, -1, 9, 0)).toScript()
         val changes =
             script
-                .removeSurrounding("""__appZenmoneyJsBridge.dispatch(["r*",[""", "]]);")
+                .removeSurrounding("""$JS_WEB_VIEW_BRIDGE.dispatch(["r*",[""", "]]);")
                 .split(',')
                 .map(String::toInt)
                 .chunked(2)
@@ -225,7 +225,7 @@ class JsWebViewProtocolTest {
             fail.value,
         )
         assertEquals(
-            """__appZenmoneyJsBridge.dispatch(["+",11,4.0]);""",
+            """$JS_WEB_VIEW_BRIDGE.dispatch(["+",11,4.0]);""",
             complete.toScript(),
         )
     }

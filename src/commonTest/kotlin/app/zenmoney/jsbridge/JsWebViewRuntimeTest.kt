@@ -5,12 +5,53 @@ import kotlin.test.assertEquals
 
 class JsWebViewRuntimeTest {
     @Test
+    fun readOnlyLegacyGlobalAndNativeChannelCleanupPreserveTheRuntime() {
+        for (appleChannel in listOf(false, true)) {
+            for (accessor in listOf(false, true)) {
+                assertEquals(
+                    "ok",
+                    evaluateRuntime(
+                        """
+                        const bridge = $JS_WEB_VIEW_BRIDGE;
+                        check(!Object.getOwnPropertyNames(globalThis).some(name => globalThis[name] === bridge),
+                            "bridge must not be exposed as a string-named global");
+                        delete globalThis.__appZenmoneyJsBridge;
+                        delete globalThis.$JS_WEB_VIEW_ANDROID_INTERFACE;
+                        delete globalThis.webkit;
+                        nativeChannel.postMessage = () => { throw new Error("replaced native method"); };
+                        bridge.dispatch(["w", "40 + 2"], 1);
+                        check(messages.pop()[2] === 42, "evaluation must survive native global cleanup");
+                        bridge.dispatch(["f", 7], 2);
+                        const created = messages.pop();
+                        check(created[0] === "r" && created[2][0] === "h", "function registration must survive cleanup");
+                        bridge.dispatch(["s", 0, "callbackAfterCleanup", created[2]], 3);
+                        messages.pop();
+                        callbackAfterCleanup(43);
+                        const callback = messages.pop();
+                        check(callback[0] === "f" && callback[4][0] === 43, "callback must use captured native channel");
+                        bridge.dispatch(["+", callback[1], ["u"]]);
+                        return "ok";
+                        """.trimIndent(),
+                        beforeRuntime =
+                            """
+                            Object.defineProperty(globalThis, '__appZenmoneyJsBridge', $accessor
+                                ? { configurable: true, get() { return undefined; } }
+                                : { configurable: true, writable: false, value: undefined });
+                            """.trimIndent(),
+                        appleChannel = appleChannel,
+                    ),
+                )
+            }
+        }
+    }
+
+    @Test
     fun acornRejectsInvalidScriptsBeforeNativeExecution() {
         assertEquals(
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 const invalidScripts = ["let = ;", "let x; let x;", "return 42;", "const f = () => { let = ; }"];
                 for (let index = 0; index < invalidScripts.length; index++) {
                     const requestId = index + 1;
@@ -42,7 +83,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 Object.defineProperty(globalThis, "__appZenmoneyCompletionState1", { value: 123, configurable: true });
                 const keys = Object.getOwnPropertyNames(globalThis).join("\n");
                 const proxy = "new Proxy({}, { has: () => true, get: () => 0 })";
@@ -76,7 +117,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 const scripts = [
                     "", ";", "42;", "(42); // trailing comment", "1; var x;", "1; let x;",
                     "1; {}", "1; { 2; var x; }", "1; if (false) 2", "1; if (true) {}",
@@ -90,6 +131,7 @@ class JsWebViewRuntimeTest {
                     "outer: { try { 1; } finally { 2; break outer; } }",
                     "outer: { try { 1; break outer; } finally { 2; } }",
                     "1; with ({x: 42}) x", "1; with ({}) {}",
+                    "let Symbol = 42; Symbol;", "const Symbol = null; 43;",
                     "let undefined = 42; if (false) 7;", "let undefined = 42; while (false) 7;",
                     "let undefined = 42; try {} finally {}", "let undefined = 42; try { throw 7; } catch (error) {}",
                     "let undefined = 42; switch (0) {}", "let undefined = 42; with ({}) {}",
@@ -118,7 +160,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 bridge.dispatch(["f", 1], 1);
                 bridge.dispatch(["s", 0, "__callback", messages.pop()[2]], 2);
                 __callback({}).catch(() => {});
@@ -166,7 +208,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 bridge.dispatch(["f", 1], 1);
                 bridge.dispatch(["s", 0, "__callback", messages.pop()[2]], 2);
                 for (const completion of ["+", "-"]) {
@@ -201,7 +243,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 bridge.dispatch(["f", 1], 1);
                 bridge.dispatch(["s", 0, "__callback", messages.pop()[2]], 2);
                 for (const reacquire of [false, true]) {
@@ -241,7 +283,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 bridge.dispatch(["f", 1], 1);
                 bridge.dispatch(["s", 0, "__callback", messages.pop()[2]], 2);
                 globalThis.__value = {};
@@ -272,7 +314,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 globalThis.__value = {};
                 bridge.dispatch(["w", "__value"], 1);
                 const encoded = messages.pop()[2];
@@ -298,7 +340,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 globalThis.__value = {};
                 bridge.dispatch(["w", "__value"], 1);
                 const encoded = messages.pop()[2];
@@ -328,7 +370,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 const evaluate = (script, id) => {
                     bridge.dispatch(["w", script], id);
                     return messages.pop();
@@ -347,7 +389,7 @@ class JsWebViewRuntimeTest {
                 check(__globalEvalValue === 41, "var must remain global");
 
                 // The inner request posts its error before the outer request completes successfully.
-                const nested = "globalThis.$JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(['w', 'throw 7'], 6); 42";
+                const nested = "$JS_WEB_VIEW_BRIDGE.dispatch(['w', 'throw 7'], 6); 42";
                 check(evaluate(nested, 5)[2] === 42, "inner failure must not fail the outer eval");
                 check(messages.pop()[2] === 7, "inner failure must retain its own value");
                 assertNoErrorSlot();
@@ -366,7 +408,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 bridge.dispatch(["f", 1], 1);
                 bridge.dispatch(["s", 0, "__callback", messages.pop()[2]], 2);
                 messages.length = 0;
@@ -405,16 +447,14 @@ class JsWebViewRuntimeTest {
                 __callback(value, Symbol("unsupported")).catch(() => {});
                 checkClean();
 
-                const native = globalThis.$JS_WEB_VIEW_ANDROID_INTERFACE;
-                const originalPost = native.postMessage;
-                native.postMessage = () => { throw new Error("post failed"); };
+                postFailure = true;
                 try {
                     __callback.call({}, {}, {}).catch(() => {});
                     checkClean();
                     try { bridge.dispatch(["w", "({})"], 4); } catch (_) {}
                     checkClean();
                 } finally {
-                    native.postMessage = originalPost;
+                    postFailure = false;
                 }
                 return "ok";
                 """.trimIndent(),
@@ -429,7 +469,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 bridge.dispatch(["f", 1], 1);
                 bridge.dispatch(["s", 0, "__callback", messages.pop()[2]], 2);
                 messages.length = 0;
@@ -467,7 +507,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 bridge.dispatch(["f", 1], 1);
                 bridge.dispatch(["s", 0, "__callback", messages.pop()[2]], 2);
                 let reenter = false;
@@ -507,7 +547,7 @@ class JsWebViewRuntimeTest {
             "ok",
             evaluateRuntime(
                 """
-                const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                const bridge = $JS_WEB_VIEW_BRIDGE;
                 const scripts = ["undefined", "NaN", "Infinity", "-Infinity", "-0", "123n"];
                 const expected = ['["u"]', '["n","nan"]', '["n","+inf"]', '["n","-inf"]', '["n","-0"]', '["i","123"]'];
                 bridge.dispatch(["y+", ["ui8", 1, "AID/"]], 1);
@@ -547,6 +587,8 @@ class JsWebViewRuntimeTest {
     private fun evaluateRuntime(
         body: String,
         inspectHandles: Boolean = false,
+        beforeRuntime: String = "",
+        appleChannel: Boolean = false,
     ): String =
         JsContext().use { context ->
             val runtime =
@@ -567,8 +609,11 @@ class JsWebViewRuntimeTest {
                         const messages = [];
                         const nativeEvaluate = globalThis.eval;
                         let nativeExecutions = 0;
-                        globalThis.$JS_WEB_VIEW_ANDROID_INTERFACE = {
+                        let postFailure = false;
+                        const nativeChannel = {
                             postMessage(message) {
+                                if (postFailure) throw new Error("post failed");
+                                if (this !== nativeChannel) throw new Error("incorrect native channel receiver");
                                 const decoded = JSON.parse(message);
                                 if (decoded[0] === "x") {
                                     nativeExecutions++;
@@ -576,6 +621,12 @@ class JsWebViewRuntimeTest {
                                 } else messages.push(decoded);
                             }
                         };
+                        if ($appleChannel) {
+                            globalThis.webkit = { messageHandlers: { $JS_WEB_VIEW_IOS_HANDLER: nativeChannel } };
+                        } else {
+                            globalThis.$JS_WEB_VIEW_ANDROID_INTERFACE = nativeChannel;
+                        }
+                        $beforeRuntime
                         $runtime
                         const check = (condition, message) => { if (!condition) throw new Error(message); };
                         $body

@@ -47,11 +47,11 @@ class JsWebViewLifecycleTest {
             }
             val context = JsWebViewContext(webView)
             context.evaluateScript("new Uint8Array(1024 * 1024)").close()
-            backing.evaluateScript("globalThis.__oldBridge = $JS_WEB_VIEW_BRIDGE_OBJECT").close()
+            backing.evaluateScript("globalThis.__oldBridge = $JS_WEB_VIEW_BRIDGE").close()
             context.close()
             jsScoped(backing) {
                 assertTrue(eval("__maps.length > 0 && __maps.every(map => map.size === 0)").boolean)
-                assertEquals("undefined", eval("typeof $JS_WEB_VIEW_BRIDGE_OBJECT").string)
+                assertEquals("undefined", eval("typeof $JS_WEB_VIEW_BRIDGE").string)
             }
             JsWebViewContext(webView).use { replacement ->
                 assertEquals(42, replacement.evaluateScript("6 * 7").use { it.int })
@@ -81,7 +81,7 @@ class JsWebViewLifecycleTest {
                             eval(
                                 """
                                 (() => {
-                                    const bridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                                    const bridge = $JS_WEB_VIEW_BRIDGE;
                                     bridge.dispatch(["f", 1], 1);
                                     bridge.dispatch(["s", 0, "__callback", messages.pop()[2]], 2);
                                     const pending = __callback({}).catch(error => error.message);

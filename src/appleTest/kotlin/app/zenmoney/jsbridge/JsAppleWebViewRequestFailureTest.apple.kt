@@ -18,12 +18,12 @@ import kotlin.test.assertTrue
 class JsAppleWebViewRequestFailureTest {
     @Test
     fun missingPageBridgeRejectsTheRequestImmediately() {
-        assertLostSession("delete globalThis.$JS_WEB_VIEW_BRIDGE_OBJECT")
+        assertLostSession("delete $JS_WEB_VIEW_BRIDGE")
     }
 
     @Test
     fun replacementSessionRejectsTheOldRequestImmediately() {
-        assertLostSession("$JS_WEB_VIEW_BRIDGE_OBJECT.sessionId = -1")
+        assertLostSession("$JS_WEB_VIEW_BRIDGE.sessionId = -1")
     }
 
     @Test
@@ -31,7 +31,7 @@ class JsAppleWebViewRequestFailureTest {
         withWebView { webView, context ->
             // Queue a release whose prefix cannot execute after dispatch starts throwing.
             context.evaluateScript("({ retained: true })").close()
-            webView.evaluateString("$JS_WEB_VIEW_BRIDGE_OBJECT.dispatch = () => { throw new Error('native failure'); }; 'ready'")
+            webView.evaluateString("$JS_WEB_VIEW_BRIDGE.dispatch = () => { throw new Error('native failure'); }; 'ready'")
             val started = NSDate().timeIntervalSinceReferenceDate
 
             val failure = assertFailsWith<IllegalStateException> { context.evaluateScript("42") }
@@ -40,7 +40,7 @@ class JsAppleWebViewRequestFailureTest {
             assertFalse(failure is JsWebViewContextDetachedException)
             assertTrue(context.isClosed)
             assertTrue(failure.message.orEmpty().isNotEmpty())
-            assertEquals("undefined", webView.evaluateString("typeof $JS_WEB_VIEW_BRIDGE_OBJECT"))
+            assertEquals("undefined", webView.evaluateString("typeof $JS_WEB_VIEW_BRIDGE"))
         }
     }
 

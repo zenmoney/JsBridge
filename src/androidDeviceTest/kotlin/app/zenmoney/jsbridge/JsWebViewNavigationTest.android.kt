@@ -16,6 +16,58 @@ import kotlin.test.assertTrue
 
 class JsWebViewNavigationTest {
     @Test
+    fun missingBridgeAndNativeExecutionFailureRejectWithoutRpcTimeout() =
+        runBlocking {
+            for (missingBridge in listOf(false, true)) {
+                val webView = createWebView()
+                try {
+                    JsWebViewContext(webView, disposeWebView = {}).use { context ->
+                        context.evaluateScript("42").close()
+                        val ready = CompletableDeferred<Unit>()
+                        val script =
+                            if (missingBridge) {
+                                "delete $JS_WEB_VIEW_BRIDGE"
+                            } else {
+                                "$JS_WEB_VIEW_BRIDGE.dispatch = () => { throw new Error('native failure'); }"
+                            }
+                        onMain { webView.evaluateJavascript(script) { ready.complete(Unit) } }
+                        withTimeout(2_000) { ready.await() }
+                        val started = System.nanoTime()
+                        val error = assertFailsWith<IllegalStateException> { context.evaluateScript("43") }
+                        assertEquals(missingBridge, error is JsWebViewContextDetachedException)
+                        assertTrue(System.nanoTime() - started < 2_000_000_000, "A native failure must not wait for the RPC timeout")
+                        assertTrue(context.isClosed)
+                    }
+                } finally {
+                    onMain { webView.destroy() }
+                }
+            }
+        }
+
+    @Test
+    fun deletingStringBridgeGlobalsPreservesEvaluationAndCallbacks() =
+        runBlocking {
+            val webView = createWebView()
+            val eventLoop = JsEventLoop(coroutineContext)
+            try {
+                JsWebViewContext(webView, disposeWebView = {}).use { context ->
+                    eventLoop.attachTo(context)
+                    jsScoped(context) {
+                        context.globalThis["echo"] = JsFunction { it[0] }
+                        eval("delete globalThis.__appZenmoneyJsBridge; delete globalThis.$JS_WEB_VIEW_ANDROID_INTERFACE")
+                        withTimeout(2_000) { assertEquals(42, eval("echo(42)").await().int) }
+                        context.globalThis["echoAfterCleanup"] = JsFunction { it[0] }
+                        withTimeout(2_000) { assertEquals(43, eval("echoAfterCleanup(43)").await().int) }
+                    }
+                }
+            } finally {
+                eventLoop.cancel()
+                withTimeout(2_000) { eventLoop.run() }
+                onMain { webView.destroy() }
+            }
+        }
+
+    @Test
     fun executesOnPageWithStrictCsp() =
         runBlocking {
             val webView = createWebView()
@@ -52,7 +104,7 @@ class JsWebViewNavigationTest {
                             }
                             assertTrue(eval("firstNativeBridge === $JS_WEB_VIEW_ANDROID_INTERFACE").boolean)
                             assertEquals(generation - 1, eval("previousGeneration").int)
-                            assertEquals(context.id, eval("$JS_WEB_VIEW_BRIDGE_OBJECT.sessionId").int)
+                            assertEquals(context.id, eval("$JS_WEB_VIEW_BRIDGE.sessionId").int)
                             context.globalThis["nativeGeneration"] =
                                 JsFunction {
                                     calls++
@@ -92,7 +144,7 @@ class JsWebViewNavigationTest {
 
             JsWebViewContext(webView, disposeWebView = {}).use { context ->
                 onMain { assertFalse(webView.settings.javaScriptEnabled) }
-                assertEquals(context.id, context.evaluateScript("$JS_WEB_VIEW_BRIDGE_OBJECT.sessionId").use { it.int })
+                assertEquals(context.id, context.evaluateScript("$JS_WEB_VIEW_BRIDGE.sessionId").use { it.int })
                 onMain { assertTrue(webView.settings.javaScriptEnabled) }
             }
         } finally {
@@ -134,7 +186,7 @@ class JsWebViewNavigationTest {
         val webView = createWebView()
         try {
             JsWebViewContext(webView, disposeWebView = {}).use { context ->
-                context.evaluateScript("globalThis.previousBridge = $JS_WEB_VIEW_BRIDGE_OBJECT; 1").close()
+                context.evaluateScript("globalThis.previousBridge = $JS_WEB_VIEW_BRIDGE; 1").close()
             }
             JsWebViewContext(webView, disposeWebView = {}).use { context ->
                 // Both contexts start at request 1. Deliver the old response before the real one.

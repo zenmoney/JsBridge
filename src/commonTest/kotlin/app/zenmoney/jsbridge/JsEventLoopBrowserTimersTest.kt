@@ -4,8 +4,74 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
+import kotlin.test.assertTrue
 
 class JsEventLoopBrowserTimersTest {
+    @Test
+    fun lockedPageShimsDoNotPreventBrowserTimerAttachment() =
+        runTest {
+            for (mode in listOf(JsTimerMode.OBSERVE, JsTimerMode.PRESERVE)) {
+                for (process in listOf("undefined", "42", "Object.freeze({ nextTick: 43 })")) {
+                    JsContext().use { context ->
+                        val eventLoop = JsEventLoop(coroutineContext)
+                        try {
+                            context.evaluateScript(TIMER_TEST_SCRIPT).close()
+                            context
+                                .evaluateScript(
+                                    """
+                                    Object.defineProperty(globalThis, 'process', { value: $process, configurable: false, writable: false });
+                                    Object.defineProperty(globalThis, 'setImmediate', { value: 44, configurable: false, writable: false });
+                                    globalThis.pageProcess = globalThis.process;
+                                    """.trimIndent(),
+                                ).close()
+                            eventLoop.attachTo(context, timerMode = mode)
+                            assertEquals(44, context.evaluateScript("setImmediate").use { it.int })
+                            assertTrue(context.evaluateScript("process === pageProcess").use { it.boolean })
+                            kotlinx.coroutines.withTimeout(1_000) { eventLoop.run() }
+                        } finally {
+                            eventLoop.cancel()
+                        }
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun readOnlySurfacePlaceholdersBecomeWorkingEventLoopFunctions() =
+        runTest {
+            for (accessor in listOf(false, true)) {
+                JsContext().use { context ->
+                    val eventLoop = JsEventLoop(coroutineContext)
+                    try {
+                        context
+                            .evaluateScript(
+                                """
+                                for (const name of ['process', 'setImmediate', 'clearImmediate']) {
+                                    Object.defineProperty(globalThis, name, $accessor
+                                        ? { configurable: true, get() { return undefined; } }
+                                        : { configurable: true, writable: false, value: undefined });
+                                }
+                                """.trimIndent(),
+                            ).close()
+                        eventLoop.attachTo(context, timerMode = JsTimerMode.PRESERVE)
+                        context
+                            .evaluateScript(
+                                """
+                                globalThis.calls = [];
+                                clearImmediate(setImmediate(() => calls.push('cancelled')));
+                                setImmediate(() => calls.push('immediate'));
+                                process.nextTick(() => calls.push('nextTick'));
+                                """.trimIndent(),
+                            ).close()
+                        kotlinx.coroutines.withTimeout(1_000) { eventLoop.run() }
+                        assertEquals("nextTick,immediate", context.evaluateScript("calls.join(',')").use { it.string })
+                    } finally {
+                        eventLoop.cancel()
+                    }
+                }
+            }
+        }
+
     @Test
     fun timerCreatedDuringAttachmentCanBeCancelledAfterAttachment() =
         runTest {

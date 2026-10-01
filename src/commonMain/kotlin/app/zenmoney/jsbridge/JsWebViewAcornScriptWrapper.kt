@@ -110,7 +110,7 @@ internal val jsWebViewAcornScriptWrapperSource =
                 offset = edit.position;
             }
             result += source.slice(offset);
-            const dispatch = "globalThis.$JS_WEB_VIEW_BRIDGE_OBJECT.dispatch";
+            const dispatch = "$JS_WEB_VIEW_BRIDGE.dispatch";
             const complete = '${JsWebViewProtocolCode.COMMAND_COMPLETE_EVALUATION.toJson()}';
             const initialize = usesWith
                 ? "Object.defineProperty(this, " + JSON.stringify(stateKey) + ", { value: void 0, writable: true, configurable: true });\n"

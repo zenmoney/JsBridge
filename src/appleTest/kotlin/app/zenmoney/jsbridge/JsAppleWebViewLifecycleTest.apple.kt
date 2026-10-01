@@ -55,7 +55,7 @@ class JsAppleWebViewLifecycleTest {
                 .evaluateScript(
                     """
                     globalThis.__lifecycleEvents = [];
-                    globalThis.__oldBridge = $JS_WEB_VIEW_BRIDGE_OBJECT;
+                    globalThis.__oldBridge = $JS_WEB_VIEW_BRIDGE;
                     __oldBridge.dispose = (() => {
                         const dispose = __oldBridge.dispose;
                         return function () {
@@ -69,7 +69,7 @@ class JsAppleWebViewLifecycleTest {
             onMainThread {
                 // Deliberately submit without waiting, then close while this evaluation is queued in WebKit.
                 webView.evaluateJavaScript(
-                    "__lifecycleEvents.push(typeof $JS_WEB_VIEW_BRIDGE_OBJECT === 'object' ? 'queued-before-close' : 'already-disposed');",
+                    "__lifecycleEvents.push(typeof $JS_WEB_VIEW_BRIDGE === 'object' ? 'queued-before-close' : 'already-disposed');",
                     null,
                 )
             }
@@ -77,13 +77,13 @@ class JsAppleWebViewLifecycleTest {
             context.close()
 
             // Native evaluateJavaScript completion provides a barrier after the queued disposal evaluation.
-            assertEquals("undefined", webView.evaluateString("typeof $JS_WEB_VIEW_BRIDGE_OBJECT"))
+            assertEquals("undefined", webView.evaluateString("typeof $JS_WEB_VIEW_BRIDGE"))
             assertEquals("queued-before-close,dispose", webView.evaluateString("__lifecycleEvents.join(',')"))
             assertEquals("true", webView.evaluateString("String(__bridgeMaps.length > 0 && __bridgeMaps.every(map => map.size === 0))"))
             JsWebViewContext(webView, disposeWebView = {}).use { replacement ->
                 assertEquals(
                     42,
-                    replacement.evaluateScript("globalThis.__replacementBridge = $JS_WEB_VIEW_BRIDGE_OBJECT; 6 * 7").use { it.int },
+                    replacement.evaluateScript("globalThis.__replacementBridge = $JS_WEB_VIEW_BRIDGE; 6 * 7").use { it.int },
                 )
                 assertEquals(
                     "true",
@@ -91,14 +91,14 @@ class JsAppleWebViewLifecycleTest {
                         """
                         __oldBridge.dispose();
                         __oldBridge.dispatch(['w', 'globalThis.__lateOldDispatchRan = true'], 999);
-                        String($JS_WEB_VIEW_BRIDGE_OBJECT === __replacementBridge);
+                        String($JS_WEB_VIEW_BRIDGE === __replacementBridge);
                         """.trimIndent(),
                     ),
                 )
                 assertEquals("undefined", replacement.evaluateScript("typeof __lateOldDispatchRan").use { it.string })
                 assertEquals(43, replacement.evaluateScript("43").use { it.int })
             }
-            assertEquals("undefined", webView.evaluateString("typeof $JS_WEB_VIEW_BRIDGE_OBJECT"))
+            assertEquals("undefined", webView.evaluateString("typeof $JS_WEB_VIEW_BRIDGE"))
         } finally {
             context.close()
             onMainThread { webView.stopLoading() }

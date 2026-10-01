@@ -474,12 +474,32 @@ class JsEventLoop(
                         let timerStateWithCallbacks = '1:0:0';
                         let disposeTimers = null;
                         let timerEventsEnabled = false;
-                        globalThis.clearImmediate = function clearImmediate (id) {
+                        // Surface spoofers can leave configurable read-only placeholders.
+                        // Assignment silently ignores them; defineProperty replaces them explicitly.
+                        function installProperty (target, name, value) {
+                            const descriptor = Object.getOwnPropertyDescriptor(target, name);
+                            if (descriptor ? descriptor.configurable : Object.isExtensible(target)) {
+                                Object.defineProperty(target, name, {
+                                    value, writable: true, configurable: true,
+                                    enumerable: descriptor ? descriptor.enumerable : true,
+                                });
+                                return true;
+                            }
+                            if (descriptor && (descriptor.writable || descriptor.set)) {
+                                target[name] = value;
+                                if (target[name] === value) return true;
+                            }
+                            // Node-style shims are optional in browser timer modes. A page's
+                            // locked property must not prevent attachment to an otherwise live realm.
+                            if (${timerMode != JsTimerMode.EVENT_LOOP}) return false;
+                            throw new TypeError('Cannot install event loop property ' + name);
+                        }
+                        installProperty(globalThis, 'clearImmediate', function clearImmediate (id) {
                             immediateQueue.remove(id);
-                        };
-                        globalThis.setImmediate = function setImmediate (callback, ...args) {
+                        });
+                        installProperty(globalThis, 'setImmediate', function setImmediate (callback, ...args) {
                             return immediateQueue.add(callback, args);
-                        };
+                        });
                         try {
                             if (${timerMode == JsTimerMode.OBSERVE}) {
                                 const names = ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval'];
@@ -588,7 +608,7 @@ class JsEventLoop(
                                             configurable: descriptor ? descriptor.configurable : true,
                                         });
                                     });
-                                    const bridge = globalThis.$JS_WEB_VIEW_BRIDGE_OBJECT;
+                                    const bridge = $JS_WEB_VIEW_BRIDGE;
                                     if (bridge && typeof bridge.addDisposeCallback === 'function') {
                                         unregister = bridge.addDisposeCallback(dispose);
                                     }
@@ -610,10 +630,17 @@ class JsEventLoop(
                                     return nativeTimerScheduler.schedule(callback, args, delay);
                                 };
                             }
-                            globalThis.process = globalThis.process || {};
-                            globalThis.process.nextTick = function nextTick (callback, ...args) {
-                                nextTickQueue.add(callback, args);
-                            };
+                            const existingProcess = globalThis.process;
+                            const process = existingProcess || {};
+                            if (typeof process === 'object' || typeof process === 'function') {
+                                if (existingProcess || installProperty(globalThis, 'process', process)) {
+                                    installProperty(process, 'nextTick', function nextTick (callback, ...args) {
+                                        nextTickQueue.add(callback, args);
+                                    });
+                                }
+                            } else if (${timerMode == JsTimerMode.EVENT_LOOP}) {
+                                throw new TypeError('Cannot install event loop property process');
+                            }
                         } catch (error) {
                             if (disposeTimers) disposeTimers();
                             throw error;

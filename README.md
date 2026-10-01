@@ -15,6 +15,21 @@ A Kotlin Multiplatform library that provides JavaScript engine integration for m
 
 The bridge parses scripts with a bundled Acorn parser and captures their completion values before native execution. See [the evaluation implementation notes](docs/webview-evaluation.md) for the protocol and parser update procedure.
 
+## WebView page globals
+
+The WebView runtime uses a non-enumerable symbol property instead of a string-named
+`window` property. Copying or deleting string properties such as `__appZenmoneyJsBridge`
+does not affect its session. The runtime captures the native message channel during
+initialization, so hiding its global or replacing `postMessage` afterwards does not
+interrupt existing callbacks. Configurable read-only `process`, `setImmediate` and
+`clearImmediate` placeholders are replaced when attaching the event loop.
+
+This is resilience within the page's JavaScript realm, not isolation from arbitrary
+page changes. Removing the bridge's symbol property, modifying JavaScript built-ins,
+or hiding the native channel before initialization can still prevent execution.
+A detached context must be replaced; native WebView navigation and cookie APIs have
+an independent lifetime.
+
 ## BigInt values
 
 Primitive JavaScript BigInt values are exposed as `JsNumber` with Double precision and are passed back to JavaScript as `number`. Boxed BigInt values (`Object(1n)`) remain `JsObject` instances and retain their JavaScript object identity.

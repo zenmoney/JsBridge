@@ -141,8 +141,31 @@ private class AndroidJsWebView(
     override fun evaluateJavaScript(script: String) {
         // A command already queued in WebView must not operate on a replacement runtime.
         evaluateInSession(
-            "if (window.$JS_WEB_VIEW_BRIDGE_OBJECT && $JS_WEB_VIEW_BRIDGE_OBJECT.sessionId === ${session.id}) { $script }",
+            "if ($JS_WEB_VIEW_BRIDGE && $JS_WEB_VIEW_BRIDGE.sessionId === ${session.id}) { $script }",
         )
+    }
+
+    override fun evaluateJavaScript(
+        script: String,
+        onFailure: (Throwable) -> Unit,
+    ) {
+        AndroidMainThread.dispatch {
+            if (nativeBridge.session !== session) {
+                onFailure(IllegalStateException("JsWebView is closed"))
+                return@dispatch
+            }
+            // Preserve Script scope and report a missing session even when no bridge reply can arrive.
+            val guardedScript =
+                "if ($JS_WEB_VIEW_BRIDGE && " +
+                    "$JS_WEB_VIEW_BRIDGE.sessionId === ${session.id}) { $script\n; true; } else { false; }"
+            webView.evaluateJavascript(guardedScript) { result ->
+                when (result) {
+                    "true" -> Unit
+                    "false" -> onFailure(JsWebViewContextDetachedException())
+                    else -> onFailure(IllegalStateException("JsWebView native JavaScript execution failed"))
+                }
+            }
+        }
     }
 
     private fun evaluateInSession(script: String) {

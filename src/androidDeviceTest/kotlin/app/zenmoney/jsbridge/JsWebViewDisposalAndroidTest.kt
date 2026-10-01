@@ -30,10 +30,10 @@ class JsWebViewDisposalAndroidTest {
                     "const unpublishedHandles = new Set(); " +
                         "globalThis.__retainedBridgeState = { objectByHandle, refCountByHandle, pendingJsCallbacks };",
                 )
-            evaluate(webView, "$JS_WEB_VIEW_BRIDGE_OBJECT.dispose(); $runtime")
+            evaluate(webView, "$JS_WEB_VIEW_BRIDGE.dispose(); $runtime")
             val retained =
                 context.evaluateScript(
-                    "globalThis.__previousBridge = $JS_WEB_VIEW_BRIDGE_OBJECT; ({payload: new Array(1024).fill(1)})",
+                    "globalThis.__previousBridge = $JS_WEB_VIEW_BRIDGE; ({payload: new Array(1024).fill(1)})",
                 )
             assertEquals("true", evaluate(webView, "__retainedBridgeState.objectByHandle.size > 1"))
             assertEquals("true", evaluate(webView, "__retainedBridgeState.refCountByHandle.size > 0"))
@@ -41,7 +41,7 @@ class JsWebViewDisposalAndroidTest {
             context.close()
 
             assertTrue(retained.isClosed)
-            assertEquals("true", evaluate(webView, "typeof $JS_WEB_VIEW_BRIDGE_OBJECT === 'undefined'"))
+            assertEquals("true", evaluate(webView, "typeof $JS_WEB_VIEW_BRIDGE === 'undefined'"))
             assertEquals(
                 "[0,0,0]",
                 evaluate(
@@ -53,15 +53,15 @@ class JsWebViewDisposalAndroidTest {
             assertEquals("42", evaluate(webView, "6 * 7"))
 
             JsWebViewContext(webView, disposeWebView = {}).use { replacement ->
-                assertEquals(replacement.id, replacement.evaluateScript("$JS_WEB_VIEW_BRIDGE_OBJECT.sessionId").use { it.int })
+                assertEquals(replacement.id, replacement.evaluateScript("$JS_WEB_VIEW_BRIDGE.sessionId").use { it.int })
                 context.close()
                 assertEquals(
                     replacement.id,
-                    replacement.evaluateScript("__previousBridge.dispose(); $JS_WEB_VIEW_BRIDGE_OBJECT.sessionId").use { it.int },
+                    replacement.evaluateScript("__previousBridge.dispose(); $JS_WEB_VIEW_BRIDGE.sessionId").use { it.int },
                 )
                 assertEquals(42, replacement.evaluateScript("40 + 2").use { it.int })
             }
-            assertEquals("true", evaluate(webView, "typeof $JS_WEB_VIEW_BRIDGE_OBJECT === 'undefined'"))
+            assertEquals("true", evaluate(webView, "typeof $JS_WEB_VIEW_BRIDGE === 'undefined'"))
         } finally {
             context.close()
             onMain { webView.destroy() }

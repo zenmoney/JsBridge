@@ -62,7 +62,7 @@ class JsWebViewObservedTimerLifecycleTest {
                 context.close()
 
                 // Native evaluation is a barrier after runtime disposal, when context RPCs are unavailable.
-                assertEquals("undefined", webView.evaluateString("typeof $JS_WEB_VIEW_BRIDGE_OBJECT"))
+                assertEquals("undefined", webView.evaluateString("typeof $JS_WEB_VIEW_BRIDGE"))
                 assertEquals(
                     "true",
                     webView.evaluateString(

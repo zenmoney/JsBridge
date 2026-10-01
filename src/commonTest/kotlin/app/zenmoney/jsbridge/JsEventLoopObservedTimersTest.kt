@@ -281,7 +281,7 @@ class JsEventLoopObservedTimersTest {
                 beforeAttachment =
                     """
                     $jsCaptureTimerMaps
-                    globalThis.$JS_WEB_VIEW_BRIDGE_OBJECT = {
+                    $JS_WEB_VIEW_BRIDGE = {
                         addDisposeCallback(callback) {
                             globalThis.disposeObservedTimers = callback;
                             return () => {};

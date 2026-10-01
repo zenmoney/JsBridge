@@ -137,7 +137,7 @@ class JsWebViewContextProtocolTest {
 
         assertEquals(7.0, assertIs<JsNumber>(result).toNumber())
         assertEquals(jsWebViewRuntimeScript, webView.scripts[0])
-        assertTrue(webView.scripts[1].contains("""__appZenmoneyJsBridge.dispatch(["w""""))
+        assertTrue(webView.scripts[1].contains("""$JS_WEB_VIEW_BRIDGE.dispatch(["w""""))
         assertEquals(2, webView.scripts.size)
         context.close()
         assertTrue(webView.isClosed)
@@ -251,7 +251,7 @@ class JsWebViewContextProtocolTest {
         first.close()
         second.close()
         context.evaluateScript("undefined").close()
-        assertFalse(webView.scripts.last().startsWith("""$JS_WEB_VIEW_BRIDGE_OBJECT.dispatch(["r*","""))
+        assertFalse(webView.scripts.last().startsWith("""$JS_WEB_VIEW_BRIDGE.dispatch(["r*","""))
         alias.close()
         assertEquals(4, webView.scripts.size)
         context.evaluateScript("undefined").close()

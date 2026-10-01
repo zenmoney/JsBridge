@@ -75,12 +75,12 @@ internal value class JsWebViewMessage private constructor(
     ): String =
         buildString {
             if (before != null) {
-                append(JS_WEB_VIEW_BRIDGE_OBJECT)
+                append(JS_WEB_VIEW_BRIDGE)
                 append(".dispatch(")
                 append(before.value)
                 append(");")
             }
-            append(JS_WEB_VIEW_BRIDGE_OBJECT)
+            append(JS_WEB_VIEW_BRIDGE)
             append(".dispatch(")
             append(value)
             if (hasRequestId) {
@@ -589,7 +589,8 @@ private fun String.expectProtocolMessageEnd(startIndex: Int) {
     expectJsonEnd(expectJsonChar(startIndex, ']'))
 }
 
-internal const val JS_WEB_VIEW_BRIDGE_OBJECT = "__appZenmoneyJsBridge"
+// A symbol keeps the runtime out of page code that copies or removes string-named globals.
+internal const val JS_WEB_VIEW_BRIDGE = "globalThis[globalThis.Symbol.for('app.zenmoney.jsbridge')]"
 internal const val JS_WEB_VIEW_ANDROID_INTERFACE = "__appZenmoneyJsBridgeNative"
 internal const val JS_WEB_VIEW_IOS_HANDLER = "appZenmoneyJsBridge"
 
@@ -607,13 +608,13 @@ private val jsWebViewExpressionValueCodecTags =
 internal val jsWebViewRuntimeScript: String = createJsWebViewRuntimeScript()
 
 internal val jsWebViewDisposeRuntimeScript: String =
-    "window.$JS_WEB_VIEW_BRIDGE_OBJECT && window.$JS_WEB_VIEW_BRIDGE_OBJECT.dispose();"
+    "$JS_WEB_VIEW_BRIDGE && $JS_WEB_VIEW_BRIDGE.dispose();"
 
 internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
     """
     (function () {
         const sessionId = ${sessionId ?: "null"};
-        if (window.$JS_WEB_VIEW_BRIDGE_OBJECT && window.$JS_WEB_VIEW_BRIDGE_OBJECT.sessionId === sessionId) return;
+        if ($JS_WEB_VIEW_BRIDGE && $JS_WEB_VIEW_BRIDGE.sessionId === sessionId) return;
 
         const coreCodec = ($expressionValueCoreCodecFactorySource)({
             enabledTags: [${jsWebViewExpressionValueCodecTags.joinToString(",") { it.toJson() }}],
@@ -697,15 +698,21 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
             }
         }
 
+        // Capture the receiver as well as the method: subsequent page cleanup must not
+        // disconnect callbacks by hiding webkit or the Android JavascriptInterface global.
+        const androidChannel = window.$JS_WEB_VIEW_ANDROID_INTERFACE;
+        const hasAndroidChannel = androidChannel && typeof androidChannel.postMessage === "function";
+        const appleChannel = !hasAndroidChannel && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.$JS_WEB_VIEW_IOS_HANDLER;
+        const sendToNative = hasAndroidChannel
+            ? androidChannel.postMessage.bind(androidChannel)
+            : appleChannel && typeof appleChannel.postMessage === "function"
+                ? appleChannel.postMessage.bind(appleChannel)
+                : null;
         function post(message) {
             if (disposed) throw new Error("JsContext is closed");
-            if (window.$JS_WEB_VIEW_ANDROID_INTERFACE && window.$JS_WEB_VIEW_ANDROID_INTERFACE.postMessage) {
-                window.$JS_WEB_VIEW_ANDROID_INTERFACE.postMessage(message, sessionId);
-            } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.$JS_WEB_VIEW_IOS_HANDLER) {
-                window.webkit.messageHandlers.$JS_WEB_VIEW_IOS_HANDLER.postMessage(message);
-            } else {
-                throw new Error("JsWebView native bridge is not installed");
-            }
+            if (!sendToNative) throw new Error("JsWebView native bridge is not installed");
+            if (hasAndroidChannel) sendToNative(message, sessionId);
+            else sendToNative(message);
         }
 
         const handleTypeFactor = 4294967296;
@@ -941,7 +948,7 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
                 unpublishedHandles.clear();
                 wrapScript = null;
                 finalizationRegistry = null;
-                if (window.$JS_WEB_VIEW_BRIDGE_OBJECT === bridge) delete window.$JS_WEB_VIEW_BRIDGE_OBJECT;
+                if ($JS_WEB_VIEW_BRIDGE === bridge) delete $JS_WEB_VIEW_BRIDGE;
             },
             dispatch (message, requestId) {
                 if (disposed) return;
@@ -998,7 +1005,9 @@ internal fun createJsWebViewRuntimeScript(sessionId: Int? = null): String =
                 }
             },
         };
-        window.$JS_WEB_VIEW_BRIDGE_OBJECT = bridge;
+        Object.defineProperty(globalThis, globalThis.Symbol.for('app.zenmoney.jsbridge'), {
+            value: bridge, configurable: true, writable: false, enumerable: false,
+        });
     })();
     """.trimIndent()
 
