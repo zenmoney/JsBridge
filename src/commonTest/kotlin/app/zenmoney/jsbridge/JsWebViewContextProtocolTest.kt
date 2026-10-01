@@ -7,12 +7,14 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class JsWebViewContextProtocolTest {
@@ -29,6 +31,36 @@ class JsWebViewContextProtocolTest {
             assertEquals(42, context.evaluateScript("42").use { it.int })
         }
     }
+
+    @Test
+    fun deallocationStillReleasesMetadataAfterTheEventLoopCompletes() =
+        runTest {
+            val webView =
+                FakeJsWebView { script ->
+                    val id = requestIdRegex.find(script)?.groupValues?.get(1) ?: return@FakeJsWebView
+                    onMessage("""["r",$id,["h",7]]""")
+                }
+            val eventLoop = JsEventLoop(coroutineContext)
+            JsWebViewContext(webView).use { context ->
+                // This protocol fake only needs native cleanup dispatch, not the JS attachment script.
+                context.core.eventLoop = eventLoop
+                try {
+                    val value = assertIs<JsObject>(context.evaluateScript("({})"))
+                    context.setTag(value, "marker", "retained")
+                    value.close()
+                    assertEquals("retained", context.getTag(value, "marker"))
+                    withTimeout(1_000) { eventLoop.runAndComplete() }
+
+                    webView.onMessage("""["d",7]""")
+                    testScheduler.runCurrent()
+
+                    assertNull(context.getTag(value, "marker"))
+                } finally {
+                    eventLoop.cancel()
+                    withTimeout(1_000) { eventLoop.run() }
+                }
+            }
+        }
 
     @Test
     fun evalFailureWhileReadingErrorDataPreservesTheOriginalException() {

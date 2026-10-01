@@ -113,7 +113,9 @@ class JsWebViewContext internal constructor(
                     }
                     // GC notifications also arrive during synchronous use, before an event loop
                     // is attached. Only touch context-owned maps on its thread, never WebKit's callback thread.
-                    core.eventLoop?.launch { drainDeallocatedHandles() }
+                    // Housekeeping is not pending JavaScript work. A checkpoint itself releases
+                    // handles; counting their cleanup as child jobs can keep run() checking forever.
+                    core.eventLoop?.dispatch { drainDeallocatedHandles() }
                 }
 
                 override fun onScriptWrapped(
